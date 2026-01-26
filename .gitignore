@@ -1,0 +1,31 @@
+# 敏感配置（需要从 .example 复制）
+.claude/settings.local.json
+
+# 个人内容（不同步）
+0-System/status.md
+0-System/context.md
+0-System/about-me/*
+!0-System/about-me/README.md
+
+# 任务历史
+.claude/skills/scheduler/history.md
+
+# 临时文件
+temp.md
+temp/
+*.log
+
+# macOS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+
+# Node.js（如果有脚本依赖）
+node_modules/
+
+# Python
+__pycache__/
+*.pyc
+.env

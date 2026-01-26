@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch"
+    ],
+    "deny": [],
+    "ask": []
+  },
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '<current-time>' && date '+%Y-%m-%d %H:%M %A' && echo '</current-time>' && echo '<short-term-memory>' && cat \"$CLAUDE_PROJECT_DIR/0-System/status.md\" 2>/dev/null && echo '</short-term-memory>'"
+          }
+        ]
+      }
+    ]
+  }
+}
