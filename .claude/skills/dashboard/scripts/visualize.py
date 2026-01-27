@@ -8,6 +8,7 @@ import re
 import os
 import webbrowser
 import tempfile
+from html import escape
 from pathlib import Path
 from datetime import datetime
 
@@ -90,11 +91,11 @@ def generate_html(data):
     for skill in data["skills"]:
         skills_html += f'''
         <div class="skill-card">
-            <div class="skill-name">{skill["name"]}</div>
-            <div class="skill-desc">{skill["desc"]}</div>
+            <div class="skill-name">{escape(skill["name"])}</div>
+            <div class="skill-desc">{escape(skill["desc"])}</div>
             <div class="skill-meta">
-                <span class="skill-version">{skill["version"]}</span>
-                <span class="skill-date">{skill["date"]}</span>
+                <span class="skill-version">{escape(skill["version"])}</span>
+                <span class="skill-date">{escape(skill["date"])}</span>
             </div>
         </div>
         '''
@@ -104,14 +105,14 @@ def generate_html(data):
     for dev in data["developing"]:
         developing_html += f'''
         <div class="dev-card">
-            <div class="dev-name">{dev["name"]}</div>
+            <div class="dev-name">{escape(dev["name"])}</div>
             <div class="progress-container">
                 <div class="progress-bar">
-                    <div class="progress-fill" style="width: {dev["progress"]}%"></div>
+                    <div class="progress-fill" style="width: {int(dev["progress"])}%"></div>
                 </div>
-                <span class="progress-text">{dev["progress"]}%</span>
+                <span class="progress-text">{int(dev["progress"])}%</span>
             </div>
-            <div class="dev-next">{dev["next"]}</div>
+            <div class="dev-next">{escape(dev["next"])}</div>
         </div>
         '''
 
@@ -121,8 +122,8 @@ def generate_html(data):
         priority_class = "high" if plan["priority"] == "高" else "mid" if plan["priority"] == "中" else "low"
         planned_html += f'''
         <div class="plan-item">
-            <span class="plan-name">{plan["name"]}</span>
-            <span class="priority {priority_class}">{plan["priority"]}</span>
+            <span class="plan-name">{escape(plan["name"])}</span>
+            <span class="priority {priority_class}">{escape(plan["priority"])}</span>
         </div>
         '''
 
