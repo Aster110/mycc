@@ -1,6 +1,9 @@
 > **AI 提示：最方便的配置是让 AI 帮你读完代码仓的 README 和 CLAUDE.md，引导用户一步步开始。**
 
 <div align="center">
+
+[English](./README.en.md) | 简体中文
+
 <img src="https://raw.githubusercontent.com/Aster110/mycc/main/img/logo-bear.png" alt="MyCC Logo" width="200">
 
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
