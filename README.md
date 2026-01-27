@@ -120,6 +120,10 @@ mycc/
 
 访问 [mycc.dev](https://mycc.dev)，输入连接码和配对码即可。
 
+<div align="center">
+<img src="https://raw.githubusercontent.com/Aster110/mycc/main/assets/screenshot-pair.png" alt="配对页面" width="300">
+</div>
+
 ### 微信小程序（即将上线）
 
 敬请期待。
