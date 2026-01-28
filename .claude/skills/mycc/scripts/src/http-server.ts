@@ -7,6 +7,7 @@ import http from "http";
 import { generateToken } from "./utils.js";
 import { adapter } from "./adapters/index.js";
 import type { PairState } from "./types.js";
+import { validateImages, type ImageData } from "./image-utils.js";
 
 const PORT = process.env.PORT || 8080;
 
@@ -127,9 +128,22 @@ export class HttpServer {
     }
 
     const body = await this.readBody(req);
-    const { message, sessionId } = JSON.parse(body);
+    const { message, sessionId, images } = JSON.parse(body) as {
+      message: string;
+      sessionId?: string;
+      images?: ImageData[];
+    };
 
-    console.log(`[CC] 收到消息: ${message.substring(0, 50)}...`);
+    // 校验图片
+    const imageValidation = validateImages(images);
+    if (!imageValidation.valid) {
+      res.writeHead(imageValidation.code || 400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: imageValidation.error }));
+      return;
+    }
+
+    const hasImages = images && images.length > 0;
+    console.log(`[CC] 收到消息: ${message.substring(0, 50)}...${hasImages ? ` (附带 ${images.length} 张图片)` : ""}`);
 
     // 设置 SSE 响应头
     res.writeHead(200, {
@@ -142,7 +156,7 @@ export class HttpServer {
 
     try {
       // 使用 adapter 的 chat 方法（返回 AsyncIterable）
-      for await (const data of adapter.chat({ message, sessionId, cwd: this.cwd })) {
+      for await (const data of adapter.chat({ message, sessionId, cwd: this.cwd, images })) {
         // 提取 session_id
         if (data && typeof data === "object" && "type" in data) {
           if (data.type === "system" && "session_id" in data) {

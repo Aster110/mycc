@@ -30,3 +30,6 @@ __pycache__/
 *.pyc
 .env
 dist/
+
+# 运行时配置
+.claude/skills/mycc/current.json

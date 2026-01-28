@@ -28,11 +28,15 @@ export interface PairState {
 
 // ============ 对话与历史 ============
 
+/** 图片数据（从 image-utils 重新导出，保持兼容） */
+export { type ImageData } from "./image-utils.js";
+
 /** Chat 请求参数 */
 export interface ChatParams {
   message: string;
   sessionId?: string;
   cwd: string;
+  images?: import("./image-utils.js").ImageData[];
 }
 
 /** Chat 回调选项 */
