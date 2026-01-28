@@ -11,8 +11,10 @@
 import { spawn, execSync } from "child_process";
 import { mkdirSync, writeFileSync, existsSync, readdirSync } from "fs";
 import { homedir } from "os";
-import { join } from "path";
+import { join, dirname } from "path";
 import { customAlphabet } from "nanoid";
+import https from "https";
+import fs from "fs";
 
 // 只用大写字母+数字，方便输入
 const generateCode = customAlphabet("ABCDEFGHJKLMNPQRSTUVWXYZ23456789", 6);
@@ -23,15 +25,65 @@ import { checkCCAvailable } from "./cc-bridge.js";
 
 const PORT = process.env.PORT || 8080;
 
+// 检查是否为 Windows 系统
+function isWindows(): boolean {
+  return process.platform === "win32";
+}
+
 // 杀掉占用端口的旧进程
 function killExistingProcess(port: number): void {
   try {
-    const pid = execSync(`lsof -i :${port} -t 2>/dev/null`).toString().trim();
+    let pid: string | null = null;
+
+    if (isWindows()) {
+      // Windows 方式：使用 netstat 查找 PID
+      try {
+        const output = execSync(`netstat -ano | findstr ":${port}"`).toString();
+        const lines = output.split('\n');
+        for (const line of lines) {
+          // 匹配格式: "  TCP    0.0.0.0:8080           0.0.0.0:0              LISTENING       21068"
+          const match = line.match(/LISTENING\s+(\d+)/);
+          if (match) {
+            pid = match[1].trim();
+            break;
+          }
+        }
+      } catch {
+        // 没有进程占用端口，忽略
+      }
+    } else {
+      // Unix/Linux 方式：使用 lsof
+      pid = execSync(`lsof -i :${port} -t 2>/dev/null`).toString().trim();
+    }
+
     if (pid) {
       console.log(chalk.yellow(`发现端口 ${port} 被占用 (PID: ${pid})，正在关闭旧进程...`));
-      execSync(`kill ${pid}`);
-      // 等待进程完全退出
-      execSync("sleep 0.5");
+
+      if (isWindows()) {
+        try {
+          // 方法1：使用 taskkill
+          execSync(`taskkill /F /PID ${pid} 2>nul`);
+        } catch {
+          // 方法2：使用 PowerShell 作为备选
+          try {
+            execSync(`powershell -Command "Stop-Process -Id ${pid} -Force -ErrorAction SilentlyContinue"`);
+          } catch {
+            console.log(chalk.yellow(`警告: 无法停止进程 ${pid}，可能已退出或无权限`));
+          }
+        }
+        // Windows 等待（正确语法）
+        try {
+          execSync("timeout /t 1 /nobreak > nul 2>&1");
+        } catch {
+          // timeout 命令可能失败，使用 ping 作为替代等待
+          execSync("ping -n 2 127.0.0.1 > nul");
+        }
+      } else {
+        execSync(`kill ${pid} 2>/dev/null`);
+        // Unix 等待
+        execSync("sleep 0.5");
+      }
+
       console.log(chalk.green("✓ 旧进程已关闭\n"));
     }
   } catch {
@@ -83,7 +135,8 @@ async function checkVersionUpdate(): Promise<void> {
     const localVersion = packageJson.default.version;
 
     // 获取最新版本（静默失败，不阻塞启动）
-    const latestVersion = execSync(`npm show ${PACKAGE_NAME} version 2>/dev/null`, { timeout: 5000 })
+    const stderrRedirect = isWindows() ? "2>nul" : "2>/dev/null";
+    const latestVersion = execSync(`npm show ${PACKAGE_NAME} version ${stderrRedirect}`, { timeout: 5000 })
       .toString()
       .trim();
 
@@ -122,9 +175,16 @@ async function startServer(args: string[]) {
   // 杀掉旧进程，确保端口可用
   killExistingProcess(Number(PORT));
 
-  // 检查 CC 是否可用
+  // 并行检查 CC CLI 和 cloudflared 以加快启动速度
   console.log("检查 Claude Code CLI...");
-  const ccAvailable = await checkCCAvailable();
+  console.log("检查 cloudflared...");
+
+  const [ccAvailable, cloudflaredAvailable] = await Promise.all([
+    checkCCAvailable(),
+    checkCloudflared()
+  ]);
+
+  // 处理 CC CLI 检查结果
   if (!ccAvailable) {
     console.error(chalk.red("错误: Claude Code CLI 未安装或不可用"));
     console.error("请先安装: npm install -g @anthropic-ai/claude-code");
@@ -132,12 +192,15 @@ async function startServer(args: string[]) {
   }
   console.log(chalk.green("✓ Claude Code CLI 可用\n"));
 
-  // 检查 cloudflared 是否可用
-  console.log("检查 cloudflared...");
-  const cloudflaredAvailable = await checkCloudflared();
+  // 处理 cloudflared 检查结果
   if (!cloudflaredAvailable) {
     console.error(chalk.red("错误: cloudflared 未安装"));
-    console.error("安装方法: brew install cloudflare/cloudflare/cloudflared");
+    if (isWindows()) {
+      console.error("安装方法: 从 https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/ 下载");
+      console.error("       下载后解压，将 cloudflared.exe 添加到 PATH 环境变量");
+    } else {
+      console.error("安装方法: brew install cloudflare/cloudflare/cloudflared");
+    }
     process.exit(1);
   }
   console.log(chalk.green("✓ cloudflared 可用\n"));
@@ -169,7 +232,7 @@ async function startServer(args: string[]) {
   // 生成配对码
   const pairCode = generateCode();
 
-  // 启动 HTTP 服务器
+  // 启动 HTTP 服务器（先不传 token）
   const server = new HttpServer(pairCode, cwd);
   await server.start();
 
@@ -186,16 +249,19 @@ async function startServer(args: string[]) {
 
   // 向 Worker 注册，获取 token
   console.log(chalk.yellow("向中转服务器注册...\n"));
-  const token = await registerToWorker(tunnelUrl, pairCode);
+  let token: string | null = await registerToWorker(tunnelUrl, pairCode);
 
   let mpUrl: string;
   if (!token) {
     console.error(chalk.red("警告: 无法注册到中转服务器，小程序可能无法使用"));
     console.log(chalk.gray("（直接访问 tunnel URL 仍可用于测试）\n"));
     mpUrl = tunnelUrl; // fallback
+    token = null;
   } else {
     console.log(chalk.green("✓ 注册成功\n"));
     mpUrl = `${WORKER_URL}/${token}`;
+    // 更新 HTTP 服务器的 token
+    server.setToken(token);
   }
 
   // 保存连接信息到文件（方便 AI 读取）
@@ -293,20 +359,55 @@ async function startServer(args: string[]) {
 }
 
 // cloudflared 路径（优先使用环境变量，否则尝试常见路径）
-const CLOUDFLARED_PATH = process.env.CLOUDFLARED_PATH
-  || "/opt/homebrew/bin/cloudflared"  // macOS ARM
-  || "/usr/local/bin/cloudflared";    // macOS Intel / Linux
+// 使用相对于当前工作目录的路径，因为脚本是从项目根目录执行的
+function getCloudflaredPath(): string {
+  // 首先检查环境变量
+  if (process.env.CLOUDFLARED_PATH) {
+    return process.env.CLOUDFLARED_PATH;
+  }
+
+  // 尝试从项目根目录查找 cloudflared.exe
+  // 先找到项目根目录
+  const projectRoot = findProjectRoot(process.cwd()) || process.cwd();
+  const cloudflaredInProject = join(projectRoot, ".claude", "skills", "mycc", "scripts", "cloudflared.exe");
+
+  console.log(`[DEBUG] projectRoot: "${projectRoot}"`);
+  console.log(`[DEBUG] cloudflaredInProject: "${cloudflaredInProject}"`);
+
+  if (fs.existsSync(cloudflaredInProject)) {
+    console.log(`[DEBUG] Found cloudflared in project: "${cloudflaredInProject}"`);
+    return cloudflaredInProject;
+  }
+
+  // 平台特定的默认路径
+  if (process.platform === "win32") {
+    return "cloudflared.exe";  // Windows - PATH 中的
+  } else if (process.platform === "darwin") {
+    return "/opt/homebrew/bin/cloudflared";  // macOS ARM
+  } else {
+    return "/usr/local/bin/cloudflared";    // macOS Intel / Linux
+  }
+}
+
+const CLOUDFLARED_PATH = getCloudflaredPath();
 
 async function checkCloudflared(): Promise<boolean> {
   return new Promise((resolve) => {
+    console.log(chalk.gray(`检查 cloudflared 路径: ${CLOUDFLARED_PATH}`));
     const proc = spawn(CLOUDFLARED_PATH, ["--version"]);
-    proc.on("close", (code) => resolve(code === 0));
-    proc.on("error", () => resolve(false));
+    proc.on("close", (code) => {
+      console.log(chalk.gray(`cloudflared 退出码: ${code}`));
+      resolve(code === 0);
+    });
+    proc.on("error", (error) => {
+      console.log(chalk.gray(`cloudflared 错误: ${error.message}`));
+      resolve(false);
+    });
   });
 }
 
 // 向 Worker 注册 tunnel URL，返回 token
-// 用 curl 而不是 Node.js fetch，因为 undici 和代理配合不稳定
+// 使用 Node.js 内置 https 模块，避免依赖外部 curl 命令
 // 带重试机制，最多尝试 3 次
 async function registerToWorker(
   tunnelUrl: string,
@@ -319,24 +420,11 @@ async function registerToWorker(
     try {
       console.log(chalk.gray(`注册尝试 ${attempt}/${MAX_RETRIES}...`));
 
-      const data = JSON.stringify({ tunnelUrl, pairCode });
-      const result = execSync(
-        `curl -s --max-time 10 -X POST "${WORKER_URL}/register" -H "Content-Type: application/json" -d '${data}'`,
-        { timeout: 15000 }
-      ).toString();
-
-      // 检查是否是有效的 JSON
-      if (!result || result.trim() === "") {
-        throw new Error("空响应");
-      }
-
-      const parsed = JSON.parse(result) as { token?: string; error?: string };
-
-      if (parsed.token) {
+      // 尝试使用 Node.js https 模块
+      const token = await makeHttpRequest(tunnelUrl, pairCode, attempt);
+      if (token) {
         console.log(chalk.green(`✓ 注册成功 (第 ${attempt} 次尝试)`));
-        return parsed.token;
-      } else {
-        throw new Error(parsed.error || "未知错误");
+        return token;
       }
     } catch (error) {
       const errMsg = error instanceof Error ? error.message : String(error);
@@ -349,14 +437,27 @@ async function registerToWorker(
     }
   }
 
-  // 所有重试都失败
+  // 所有重试都失败，尝试 curl 作为最后的手段
+  console.error(chalk.yellow("\n⚠️  HTTPS 请求全部失败，尝试使用 curl..."));
+  try {
+    const token = await makeCurlRequest(tunnelUrl, pairCode);
+    if (token) {
+      console.log(chalk.green(`✓ 使用 curl 注册成功`));
+      return token;
+    }
+  } catch (curlError) {
+    console.error(chalk.yellow(`curl 也失败: ${curlError}`));
+  }
+
+  // 所有方法都失败
   console.error(chalk.red("\n========================================"));
-  console.error(chalk.red("错误: Worker 注册失败（已重试 3 次）"));
+  console.error(chalk.red("错误: Worker 注册失败（已重试所有方法）"));
   console.error(chalk.red("========================================"));
   console.error(chalk.yellow("\n可能的原因:"));
   console.error("  1. 网络连接问题");
   console.error("  2. 代理服务器不稳定");
   console.error("  3. Worker 服务暂时不可用");
+  console.error("  4. 服务器返回错误响应");
   console.error(chalk.yellow("\n解决方法:"));
   console.error("  1. 检查网络连接");
   console.error("  2. 稍后重启后端重试");
@@ -365,10 +466,117 @@ async function registerToWorker(
   return null;
 }
 
+// 使用 Node.js https 模块发送请求
+async function makeHttpRequest(
+  tunnelUrl: string,
+  pairCode: string,
+  attempt: number
+): Promise<string | null> {
+  return new Promise((resolve, reject) => {
+    const data = JSON.stringify({ tunnelUrl, pairCode });
+    const url = new URL(`${WORKER_URL}/register`);
+
+    const options = {
+      hostname: url.hostname,
+      port: url.port || 443,
+      path: url.pathname,
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(data),
+        'User-Agent': 'mycc-backend/0.1.0'
+      },
+      timeout: 10000 // 10秒超时
+    };
+
+    const req = https.request(options, (res) => {
+      let responseData = '';
+
+      res.on('data', (chunk) => {
+        responseData += chunk;
+      });
+
+      res.on('end', () => {
+        console.log(chalk.gray(`HTTP ${res.statusCode} ${res.statusMessage}`));
+
+        if (res.statusCode !== 200) {
+          reject(new Error(`HTTP ${res.statusCode}: ${responseData.substring(0, 100)}`));
+          return;
+        }
+
+        if (!responseData || responseData.trim() === '') {
+          reject(new Error('空响应'));
+          return;
+        }
+
+        try {
+          const parsed = JSON.parse(responseData) as { token?: string; error?: string };
+          if (parsed.token) {
+            resolve(parsed.token);
+          } else {
+            reject(new Error(parsed.error || '服务器返回错误'));
+          }
+        } catch (error) {
+          reject(new Error(`JSON 解析失败: ${error instanceof Error ? error.message : String(error)}`));
+        }
+      });
+    });
+
+    req.on('error', (error) => {
+      reject(new Error(`请求失败: ${error.message}`));
+    });
+
+    req.on('timeout', () => {
+      req.destroy();
+      reject(new Error('请求超时'));
+    });
+
+    req.write(data);
+    req.end();
+  });
+}
+
+// 使用 curl 作为备选方案
+async function makeCurlRequest(
+  tunnelUrl: string,
+  pairCode: string
+): Promise<string | null> {
+  return new Promise((resolve, reject) => {
+    try {
+      const data = JSON.stringify({ tunnelUrl, pairCode });
+      // 转义双引号以便在命令行中使用
+      const escapedData = data.replace(/"/g, '\\"');
+      const curlCommand = `curl -s --max-time 10 -X POST "${WORKER_URL}/register" -H "Content-Type: application/json" -d "${escapedData}"`;
+      console.log(chalk.gray(`执行 curl 命令: ${curlCommand.substring(0, 80)}...`));
+
+      const result = execSync(
+        curlCommand,
+        { timeout: 15000 }
+      ).toString();
+
+      if (!result || result.trim() === "") {
+        reject(new Error("空响应"));
+        return;
+      }
+
+      const parsed = JSON.parse(result) as { token?: string; error?: string };
+      if (parsed.token) {
+        resolve(parsed.token);
+      } else {
+        reject(new Error(parsed.error || "未知错误"));
+      }
+    } catch (error) {
+      reject(new Error(`curl 命令失败: ${error instanceof Error ? error.message : String(error)}`));
+    }
+  });
+}
+
 async function startTunnel(port: number): Promise<string | null> {
   return new Promise((resolve) => {
     // --config /dev/null: 防止加载默认 config.yml（会影响 Quick Tunnel 路由）
-    const proc = spawn(CLOUDFLARED_PATH, ["tunnel", "--config", "/dev/null", "--url", `http://localhost:${port}`], {
+    // Windows 上使用 nul，Unix 上使用 /dev/null
+    const configArg = isWindows() ? "nul" : "/dev/null";
+    const proc = spawn(CLOUDFLARED_PATH, ["tunnel", "--config", configArg, "--url", `http://localhost:${port}`], {
       stdio: ["ignore", "pipe", "pipe"],
     });
 

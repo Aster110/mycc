@@ -1,0 +1,8 @@
+{
+  "routeToken": "YOUR_ROUTE_TOKEN",
+  "pairCode": "YOUR_PAIR_CODE",
+  "tunnelUrl": "https://your-tunnel.trycloudflare.com",
+  "mpUrl": "https://api.mycc.dev/YOUR_ROUTE_TOKEN",
+  "cwd": "/path/to/your/project",
+  "startedAt": "2026-01-01T00:00:00.000Z"
+}
