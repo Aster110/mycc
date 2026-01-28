@@ -20,12 +20,12 @@ export class HttpServer {
   private state: PairState;
   private cwd: string;
 
-  constructor(pairCode: string, cwd: string) {
+  constructor(pairCode: string, cwd: string, token?: string) {
     this.cwd = cwd;
     this.state = {
       pairCode,
-      paired: false,
-      token: null,
+      paired: token ? true : false,
+      token: token || null,
     };
 
     this.server = http.createServer((req, res) => {
@@ -84,20 +84,21 @@ export class HttpServer {
       return;
     }
 
-    // 如果已配对，返回相同 token（不覆盖）
+    // 如果已配对（通过构造函数传入 token），返回现有 token
     if (this.state.paired && this.state.token) {
-      console.log("[HTTP] 已配对，返回现有 token");
+      console.log(`[HTTP] 已配对，返回现有 token: ${this.state.token}`);
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ success: true, token: this.state.token }));
       return;
     }
 
-    // 首次配对，生成 token
-    const token = this.generateToken();
+    // 理论上不会走到这里，因为 token 应该在构造函数中传入
+    // 但保留 fallback 逻辑
+    const token = this.state.token || this.generateToken();
     this.state.paired = true;
     this.state.token = token;
 
-    console.log("[HTTP] 配对成功!");
+    console.log(`[HTTP] 配对成功! Token: ${token}`);
 
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ success: true, token }));
@@ -108,7 +109,10 @@ export class HttpServer {
     const authHeader = req.headers.authorization;
     const token = authHeader?.replace("Bearer ", "");
 
+    console.log(`[HTTP] 聊天请求: token=${token}, paired=${this.state.paired}, expected token=${this.state.token}`);
+
     if (!this.state.paired || token !== this.state.token) {
+      console.log(`[HTTP] 未授权: token mismatch or not paired`);
       res.writeHead(401, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: "未授权" }));
       return;
@@ -117,7 +121,7 @@ export class HttpServer {
     const body = await this.readBody(req);
     const { message, sessionId } = JSON.parse(body);
 
-    console.log(`[CC] 收到消息: ${message.substring(0, 50)}...`);
+    console.log(`[CC] 收到消息: ${message.substring(0, 50)}... (sessionId: ${sessionId})`);
 
     // 设置 SSE 响应头
     res.writeHead(200, {
@@ -251,6 +255,12 @@ export class HttpServer {
         resolve(Number(PORT));
       });
     });
+  }
+
+  setToken(token: string) {
+    this.state.token = token;
+    this.state.paired = true;
+    console.log(`[HTTP] Token 已更新: ${token}`);
   }
 
   stop() {
