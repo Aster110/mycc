@@ -1,6 +1,6 @@
 {
   "name": "mycc",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "description": "MYCC ｜Claude Code 移动端（微信小程序，网页版）本地后端",
   "main": "dist/index.js",
