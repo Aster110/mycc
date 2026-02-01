@@ -173,7 +173,24 @@ async function startServer(args: string[]) {
   // 记录任务执行历史到 history.md
   const recordHistory = (taskCwd: string, taskName: string, status: string) => {
     const historyPath = join(taskCwd, ".claude", "skills", "scheduler", "history.md");
-    if (!existsSync(historyPath)) return;
+
+    // 如果 history.md 不存在，自动创建
+    if (!existsSync(historyPath)) {
+      const header = `# 定时任务执行记录
+
+> 每次执行任务都会记录在这里
+
+---
+
+| 时间 | 任务 | 状态 |
+|------|------|------|
+`;
+      try {
+        writeFileSync(historyPath, header);
+      } catch {
+        return; // 创建失败则跳过
+      }
+    }
 
     const now = new Date();
     const timestamp = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")} ${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
