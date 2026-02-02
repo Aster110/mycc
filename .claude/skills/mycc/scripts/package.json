@@ -1,6 +1,6 @@
 {
   "name": "cc-miniprogram",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "type": "module",
   "description": "Claude Code 微信小程序本地后端",
   "main": "dist/index.js",
