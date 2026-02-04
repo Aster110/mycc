@@ -275,6 +275,8 @@ ${skillLine}
       const newRegisterResult = await registerToWorker(newUrl, pairCode, deviceId);
       if (newRegisterResult?.token) {
         console.log(chalk.green("✓ 重新注册成功"));
+        // 保存新的连接信息到 current.json
+        saveConnectionInfo();
       } else {
         console.warn(chalk.yellow("⚠️ 重新注册失败，小程序可能无法访问"));
       }
