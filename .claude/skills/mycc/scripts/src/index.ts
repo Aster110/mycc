@@ -258,7 +258,7 @@ ${skillLine}
   console.log(chalk.yellow("启动 tunnel...\n"));
 
   // 创建 Provider 和 Manager
-  const tunnelProvider = new CloudflareProvider(15000);
+  const tunnelProvider = new CloudflareProvider(120000); // 120 秒超时，cloudflared 建立隧道可能需要较长时间
 
   // tunnelUrl 需要可变，因为重启时会更新
   let tunnelUrl: string;
