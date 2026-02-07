@@ -90,6 +90,7 @@ export class HttpServer {
     const { pairCode } = JSON.parse(body);
 
     if (pairCode !== this.state.pairCode) {
+      console.log("[Pair] 配对失败: 配对码错误");
       res.writeHead(401, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: "配对码错误" }));
       return;
@@ -97,7 +98,7 @@ export class HttpServer {
 
     // 如果已配对，返回相同 token（不覆盖）
     if (this.state.paired && this.state.token) {
-      console.log("[HTTP] 已配对，返回现有 token");
+      console.log("[Pair] 重复配对，返回现有 token");
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ success: true, token: this.state.token }));
       return;
@@ -108,7 +109,7 @@ export class HttpServer {
     this.state.paired = true;
     this.state.token = token;
 
-    console.log("[HTTP] 配对成功!");
+    console.log("[Pair] 首次配对成功");
 
     // 通知外部保存 authToken
     if (this.onPaired) {

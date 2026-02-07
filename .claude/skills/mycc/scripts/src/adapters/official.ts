@@ -45,7 +45,11 @@ export class OfficialAdapter implements CCAdapter {
       pathToClaudeCodeExecutable: CLAUDE_CLI_PATH,
       cwd: cwd || process.cwd(),
       resume: sessionId || undefined,
-      permissionMode: "bypassPermissions",
+      permissionMode: "acceptEdits",
+      canUseTool: async (_toolName, input) => ({
+        behavior: "allow" as const,
+        updatedInput: input,
+      }),
     };
 
     // 如果检测到需要用 node 执行（npm 全局安装），设置 executable

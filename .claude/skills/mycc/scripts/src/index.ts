@@ -20,12 +20,12 @@ import { getConfigDir, loadConfig, deleteConfig, findProjectRoot } from "./confi
 import {
   killPortProcess,
   checkCloudflared,
+  checkCCAvailable,
   getCloudflaredInstallHint,
 } from "./platform.js";
 import qrcode from "qrcode-terminal";
 import chalk from "chalk";
 import { HttpServer } from "./http-server.js";
-import { checkCCAvailable } from "./cc-bridge.js";
 import { startScheduler, stopScheduler, type Task } from "./scheduler.js";
 import { adapter } from "./adapters/index.js";
 import { CloudflareProvider } from "./tunnel-provider.js";
