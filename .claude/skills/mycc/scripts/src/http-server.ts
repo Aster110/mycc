@@ -4,6 +4,7 @@
  */
 
 import http from "http";
+import os from "os";
 import { generateToken } from "./utils.js";
 import { adapter } from "./adapters/index.js";
 import type { PairState } from "./types.js";
@@ -82,12 +83,20 @@ export class HttpServer {
 
   private handleHealth(res: http.ServerResponse) {
     res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ status: "ok", paired: this.state.paired }));
+    res.end(JSON.stringify({ status: "ok", paired: this.state.paired, hostname: os.hostname() }));
   }
 
   private async handlePair(req: http.IncomingMessage, res: http.ServerResponse) {
     const body = await this.readBody(req);
-    const { pairCode } = JSON.parse(body);
+    let parsed;
+    try {
+      parsed = JSON.parse(body);
+    } catch {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Invalid JSON" }));
+      return;
+    }
+    const { pairCode } = parsed;
 
     if (pairCode !== this.state.pairCode) {
       console.log("[Pair] 配对失败: 配对码错误");
@@ -132,10 +141,19 @@ export class HttpServer {
     }
 
     const body = await this.readBody(req);
-    const { message, sessionId, images } = JSON.parse(body) as {
+    let parsed;
+    try {
+      parsed = JSON.parse(body);
+    } catch {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Invalid JSON" }));
+      return;
+    }
+    const { message, sessionId, images, model } = parsed as {
       message: string;
       sessionId?: string;
       images?: ImageData[];
+      model?: string;
     };
 
     // 校验图片
@@ -160,7 +178,7 @@ export class HttpServer {
 
     try {
       // 使用 adapter 的 chat 方法（返回 AsyncIterable）
-      for await (const data of adapter.chat({ message, sessionId, cwd: this.cwd, images })) {
+      for await (const data of adapter.chat({ message, sessionId, cwd: this.cwd, images, model: model || undefined })) {
         // 提取 session_id
         if (data && typeof data === "object" && "type" in data) {
           if (data.type === "system" && "session_id" in data) {
@@ -262,7 +280,15 @@ export class HttpServer {
 
     try {
       const body = await this.readBody(req);
-      const { sessionId, newTitle } = JSON.parse(body);
+      let parsed;
+      try {
+        parsed = JSON.parse(body);
+      } catch {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Invalid JSON" }));
+        return;
+      }
+      const { sessionId, newTitle } = parsed;
 
       // 验证输入
       if (!sessionId || typeof newTitle !== "string") {
@@ -288,10 +314,19 @@ export class HttpServer {
     }
   }
 
-  private readBody(req: http.IncomingMessage): Promise<string> {
+  private readBody(req: http.IncomingMessage, maxBytes: number = 10 * 1024 * 1024): Promise<string> {
     return new Promise((resolve, reject) => {
       let body = "";
-      req.on("data", (chunk) => (body += chunk));
+      let size = 0;
+      req.on("data", (chunk: Buffer) => {
+        size += chunk.length;
+        if (size > maxBytes) {
+          req.destroy();
+          reject(new Error("Request body too large"));
+          return;
+        }
+        body += chunk;
+      });
       req.on("end", () => resolve(body));
       req.on("error", reject);
     });

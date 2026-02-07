@@ -38,7 +38,7 @@ export class OfficialAdapter implements CCAdapter {
    * 发送消息，返回 SSE 事件流
    */
   async *chat(params: ChatParams): AsyncIterable<SSEEvent> {
-    const { message, sessionId, cwd, images } = params;
+    const { message, sessionId, cwd, images, model } = params;
 
     // 构造 SDK 选项
     const sdkOptions: Parameters<typeof query>[0]["options"] = {
@@ -50,6 +50,7 @@ export class OfficialAdapter implements CCAdapter {
         behavior: "allow" as const,
         updatedInput: input,
       }),
+      model: model || undefined,
     };
 
     // 如果检测到需要用 node 执行（npm 全局安装），设置 executable

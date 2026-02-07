@@ -40,6 +40,7 @@ export interface ChatParams {
   sessionId?: string;
   cwd: string;
   images?: ImageData[];
+  model?: string;
 }
 
 
