@@ -15,6 +15,11 @@ import { listSkills } from "./skills.js";
 
 const PORT = process.env.PORT || 8080;
 
+// 配对速率限制：每 IP 5 次失败后锁定 5 分钟
+const PAIR_MAX_ATTEMPTS = 5;
+const PAIR_LOCK_MS = 5 * 60 * 1000;
+const pairAttempts = new Map<string, { count: number; lockedUntil: number }>();
+
 export class HttpServer {
   private server: http.Server;
   private state: PairState;
@@ -91,6 +96,17 @@ export class HttpServer {
   }
 
   private async handlePair(req: http.IncomingMessage, res: http.ServerResponse) {
+    // 速率限制检查
+    const ip = req.headers["x-forwarded-for"]?.toString().split(",")[0]?.trim() || req.socket.remoteAddress || "unknown";
+    const record = pairAttempts.get(ip);
+    if (record && Date.now() < record.lockedUntil) {
+      const waitSec = Math.ceil((record.lockedUntil - Date.now()) / 1000);
+      console.log(`[Pair] IP ${ip} 被锁定，剩余 ${waitSec}s`);
+      res.writeHead(429, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: `请求过于频繁，请 ${waitSec} 秒后重试` }));
+      return;
+    }
+
     const body = await this.readBody(req);
     let parsed;
     try {
@@ -103,11 +119,24 @@ export class HttpServer {
     const { pairCode } = parsed;
 
     if (pairCode !== this.state.pairCode) {
-      console.log("[Pair] 配对失败: 配对码错误");
+      // 记录失败次数
+      const attempts = record || { count: 0, lockedUntil: 0 };
+      attempts.count++;
+      if (attempts.count >= PAIR_MAX_ATTEMPTS) {
+        attempts.lockedUntil = Date.now() + PAIR_LOCK_MS;
+        attempts.count = 0;
+        console.log(`[Pair] IP ${ip} 失败 ${PAIR_MAX_ATTEMPTS} 次，锁定 5 分钟`);
+      }
+      pairAttempts.set(ip, attempts);
+
+      console.log(`[Pair] 配对失败: 配对码错误 (${attempts.count}/${PAIR_MAX_ATTEMPTS})`);
       res.writeHead(401, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: "配对码错误" }));
       return;
     }
+
+    // 配对成功，清除该 IP 的失败记录
+    pairAttempts.delete(ip);
 
     // 如果已配对，返回相同 token（不覆盖）
     if (this.state.paired && this.state.token) {
