@@ -76,7 +76,9 @@ export class CloudflareProvider implements TunnelProvider {
 
       this.proc = proc;
       let resolved = false;
-      const urlPattern = /https:\/\/[a-z0-9-]+\.trycloudflare\.com/;
+      // quick tunnel URL 格式: word1-word2-word3-word4.trycloudflare.com
+      // 必须包含至少一个连字符，排除 api.trycloudflare.com 等系统域名
+      const urlPattern = /https:\/\/[a-z0-9]+-[a-z0-9-]+\.trycloudflare\.com/;
 
       const handleOutput = (data: Buffer) => {
         const output = data.toString();

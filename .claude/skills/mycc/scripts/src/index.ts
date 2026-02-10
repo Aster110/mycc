@@ -30,6 +30,7 @@ import { startScheduler, stopScheduler, type Task } from "./scheduler.js";
 import { adapter } from "./adapters/index.js";
 import { CloudflareProvider } from "./tunnel-provider.js";
 import { TunnelManager } from "./tunnel-manager.js";
+import { loadPublicUrl } from "./env-loader.js";
 
 const PORT = process.env.PORT || 8080;
 const WORKER_URL = process.env.WORKER_URL || "https://api.mycc.dev";
@@ -94,15 +95,26 @@ async function startServer(args: string[]) {
   }
   console.log(chalk.green("✓ Claude Code CLI 可用\n"));
 
-  // 检查 cloudflared 是否可用
-  console.log("检查 cloudflared...");
-  const cloudflaredAvailable = await checkCloudflared();
-  if (!cloudflaredAvailable) {
-    console.error(chalk.red("错误: cloudflared 未安装"));
-    console.error(getCloudflaredInstallHint());
-    process.exit(1);
+  // 检测公网模式（读取 .env 中的 PUBLIC_URL）
+  // 搜索顺序：cwd → 脚本所在目录（scripts/）
+  const scriptsDir = new URL("..", import.meta.url).pathname;
+  const publicUrl = loadPublicUrl(process.cwd(), scriptsDir);
+  const isPublicMode = !!publicUrl;
+
+  if (isPublicMode) {
+    console.log(chalk.cyan(`\n公网模式: ${publicUrl}`));
+    console.log(chalk.gray("  跳过 cloudflared（不需要内网穿透）\n"));
+  } else {
+    // 只有内网模式才需要 cloudflared
+    console.log("检查 cloudflared...");
+    const cloudflaredAvailable = await checkCloudflared();
+    if (!cloudflaredAvailable) {
+      console.error(chalk.red("错误: cloudflared 未安装"));
+      console.error(getCloudflaredInstallHint());
+      process.exit(1);
+    }
+    console.log(chalk.green("✓ cloudflared 可用\n"));
   }
-  console.log(chalk.green("✓ cloudflared 可用\n"));
 
   // 解析工作目录
   const cwdIndex = args.indexOf("--cwd");
@@ -160,8 +172,18 @@ async function startServer(args: string[]) {
 
   const { deviceId, pairCode, authToken } = config;
 
-  // 启动 HTTP 服务器（传入已有的 authToken）
-  const server = new HttpServer(pairCode, cwd, authToken);
+  // 启动 HTTP/HTTPS 服务器（公网模式下检测 Origin Certificate）
+  const certPath = join(scriptsDir, "origin-cert.pem");
+  const keyPath = join(scriptsDir, "origin-key.pem");
+  const tlsConfig = existsSync(certPath) && existsSync(keyPath)
+    ? { certPath, keyPath }
+    : undefined;
+
+  if (tlsConfig) {
+    console.log(chalk.green("✓ 检测到 Origin Certificate，使用 HTTPS\n"));
+  }
+
+  const server = new HttpServer(pairCode, cwd, authToken, tlsConfig);
 
   // 如果之前已配对，显示状态
   if (authToken) {
@@ -254,51 +276,53 @@ ${skillLine}
   };
   startScheduler(cwd, executeTask);
 
-  // 启动 cloudflared tunnel（使用 TunnelManager 保活）
-  console.log(chalk.yellow("启动 tunnel...\n"));
-
-  // 创建 Provider 和 Manager
-  const tunnelProvider = new CloudflareProvider(120000); // 120 秒超时，cloudflared 建立隧道可能需要较长时间
-
   // tunnelUrl 需要可变，因为重启时会更新
   let tunnelUrl: string;
+  let tunnelManager: TunnelManager | null = null;
 
-  // 创建 TunnelManager，设置重启成功回调
-  const tunnelManager = new TunnelManager({
-    localPort: Number(PORT),
-    onRestartSuccess: async (newUrl: string) => {
-      console.log(chalk.cyan(`[TunnelManager] 更新 tunnelUrl: ${newUrl}`));
-      tunnelUrl = newUrl;
+  if (isPublicMode) {
+    // 公网模式：直接用 PUBLIC_URL，不启动 tunnel
+    tunnelUrl = publicUrl!;
+    console.log(chalk.green(`✓ 使用公网地址: ${tunnelUrl}\n`));
+  } else {
+    // 内网模式：启动 cloudflared tunnel（使用 TunnelManager 保活）
+    console.log(chalk.yellow("启动 tunnel...\n"));
 
-      // 重新注册到 Worker
-      console.log(chalk.gray("重新注册到中转服务器..."));
-      const newRegisterResult = await registerToWorker(newUrl, pairCode, deviceId);
-      if (newRegisterResult?.token) {
-        console.log(chalk.green("✓ 重新注册成功"));
-        // 保存新的连接信息到 current.json
-        saveConnectionInfo();
-      } else {
-        console.warn(chalk.yellow("⚠️ 重新注册失败，小程序可能无法访问"));
-      }
-    },
-    onGiveUp: () => {
-      console.error(chalk.red("╔════════════════════════════════════════╗"));
-      console.error(chalk.red("║  Tunnel 重连失败次数过多，已放弃       ║"));
-      console.error(chalk.red("║  请手动重启: /mycc                     ║"));
-      console.error(chalk.red("╚════════════════════════════════════════╝"));
-    },
-  });
+    const tunnelProvider = new CloudflareProvider(120000);
 
-  // 启动 tunnel
-  try {
-    tunnelUrl = await tunnelManager.start(tunnelProvider);
-  } catch (error) {
-    console.error(chalk.red("错误: 无法启动 tunnel"), error);
-    process.exit(1);
+    tunnelManager = new TunnelManager({
+      localPort: Number(PORT),
+      onRestartSuccess: async (newUrl: string) => {
+        console.log(chalk.cyan(`[TunnelManager] 更新 tunnelUrl: ${newUrl}`));
+        tunnelUrl = newUrl;
+
+        console.log(chalk.gray("重新注册到中转服务器..."));
+        const newRegisterResult = await registerToWorker(newUrl, pairCode, deviceId);
+        if (newRegisterResult?.token) {
+          console.log(chalk.green("✓ 重新注册成功"));
+          saveConnectionInfo();
+        } else {
+          console.warn(chalk.yellow("⚠️ 重新注册失败，小程序可能无法访问"));
+        }
+      },
+      onGiveUp: () => {
+        console.error(chalk.red("╔════════════════════════════════════════╗"));
+        console.error(chalk.red("║  Tunnel 重连失败次数过多，已放弃       ║"));
+        console.error(chalk.red("║  请手动重启: /mycc                     ║"));
+        console.error(chalk.red("╚════════════════════════════════════════╝"));
+      },
+    });
+
+    try {
+      tunnelUrl = await tunnelManager.start(tunnelProvider);
+    } catch (error) {
+      console.error(chalk.red("错误: 无法启动 tunnel"), error);
+      process.exit(1);
+    }
+
+    console.log(chalk.green(`✓ Tunnel 已启动: ${tunnelUrl}`));
+    console.log(chalk.gray(`  保活监控已开启（心跳间隔 60s，失败阈值 3 次）\n`));
   }
-
-  console.log(chalk.green(`✓ Tunnel 已启动: ${tunnelUrl}`));
-  console.log(chalk.gray(`  保活监控已开启（心跳间隔 60s，失败阈值 3 次）\n`));
 
   // 向 Worker 注册，获取 token（带 deviceId）
   console.log(chalk.yellow("向中转服务器注册...\n"));
@@ -415,7 +439,7 @@ ${skillLine}
       // Ctrl+C
       if (key[0] === 3) {
         console.log(chalk.yellow("\n正在退出..."));
-        tunnelManager.stop();
+        tunnelManager?.stop();
         stopScheduler();
         server.stop();
         process.exit(0);
@@ -430,14 +454,14 @@ ${skillLine}
   // 处理退出
   process.on("SIGINT", () => {
     console.log(chalk.yellow("\n正在退出..."));
-    tunnelManager.stop();
+    tunnelManager?.stop();
     stopScheduler();
     server.stop();
     process.exit(0);
   });
 
   process.on("SIGTERM", () => {
-    tunnelManager.stop();
+    tunnelManager?.stop();
     stopScheduler();
     server.stop();
     process.exit(0);

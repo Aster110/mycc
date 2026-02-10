@@ -4,8 +4,10 @@
  */
 
 import http from "http";
+import https from "https";
 import os from "os";
 import { join } from "path";
+import { readFileSync, existsSync } from "fs";
 import { generateToken } from "./utils.js";
 import { adapter } from "./adapters/index.js";
 import type { PairState } from "./types.js";
@@ -14,6 +16,11 @@ import { renameSession } from "./history.js";
 import { listSkills } from "./skills.js";
 
 const PORT = process.env.PORT || 8080;
+
+export interface TlsConfig {
+  certPath: string;
+  keyPath: string;
+}
 
 // 配对速率限制：每 IP 5 次失败后锁定 5 分钟
 const PAIR_MAX_ATTEMPTS = 5;
@@ -24,12 +31,13 @@ const pairAttempts = new Map<string, { count: number; lockedUntil: number }>();
 export function _resetPairAttempts() { pairAttempts.clear(); }
 
 export class HttpServer {
-  private server: http.Server;
+  private server: http.Server | https.Server;
   private state: PairState;
   private cwd: string;
   private onPaired?: (token: string) => void;
+  private isTls: boolean;
 
-  constructor(pairCode: string, cwd: string, authToken?: string) {
+  constructor(pairCode: string, cwd: string, authToken?: string, tls?: TlsConfig) {
     this.cwd = cwd;
     // 如果传入了 authToken，说明之前已配对过
     this.state = {
@@ -38,9 +46,21 @@ export class HttpServer {
       token: authToken || null,
     };
 
-    this.server = http.createServer((req, res) => {
+    const handler = (req: http.IncomingMessage, res: http.ServerResponse) => {
       this.handleRequest(req, res);
-    });
+    };
+
+    // 如果提供了 TLS 证书，使用 HTTPS
+    if (tls && existsSync(tls.certPath) && existsSync(tls.keyPath)) {
+      this.server = https.createServer({
+        cert: readFileSync(tls.certPath),
+        key: readFileSync(tls.keyPath),
+      }, handler);
+      this.isTls = true;
+    } else {
+      this.server = http.createServer(handler);
+      this.isTls = false;
+    }
   }
 
   /** 设置配对成功回调（用于持久化 authToken） */
@@ -399,9 +419,10 @@ export class HttpServer {
         reject(err);
       });
 
-      this.server.listen(PORT, () => {
-        console.log(`[HTTP] 服务启动在端口 ${PORT}`);
-        resolve(Number(PORT));
+      const port = Number(process.env.PORT || 8080);
+      this.server.listen(port, () => {
+        console.log(`[${this.isTls ? "HTTPS" : "HTTP"}] 服务启动在端口 ${port}`);
+        resolve(port);
       });
     });
   }
