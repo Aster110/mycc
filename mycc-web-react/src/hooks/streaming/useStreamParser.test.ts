@@ -50,10 +50,10 @@ describe("useStreamParser", () => {
       };
 
       result.current.processStreamLine(
-        JSON.stringify({
+        `data: ${JSON.stringify({
           type: "claude_json",
           data: assistantMessage,
-        }),
+        })}`,
         mockContext,
       );
 
@@ -88,10 +88,10 @@ describe("useStreamParser", () => {
       };
 
       result.current.processStreamLine(
-        JSON.stringify({
+        `data: ${JSON.stringify({
           type: "claude_json",
           data: assistantMessage,
-        }),
+        })}`,
         mockContext,
       );
 
@@ -126,10 +126,10 @@ describe("useStreamParser", () => {
       };
 
       result.current.processStreamLine(
-        JSON.stringify({
+        `data: ${JSON.stringify({
           type: "claude_json",
           data: assistantMessage,
-        }),
+        })}`,
         mockContext,
       );
 
@@ -166,10 +166,10 @@ describe("useStreamParser", () => {
       };
 
       result.current.processStreamLine(
-        JSON.stringify({
+        `data: ${JSON.stringify({
           type: "claude_json",
           data: assistantMessage,
-        }),
+        })}`,
         mockContext,
       );
 
@@ -206,10 +206,10 @@ describe("useStreamParser", () => {
       };
 
       result.current.processStreamLine(
-        JSON.stringify({
+        `data: ${JSON.stringify({
           type: "claude_json",
           data: assistantMessage,
-        }),
+        })}`,
         mockContext,
       );
 
@@ -246,10 +246,10 @@ describe("useStreamParser", () => {
       };
 
       result.current.processStreamLine(
-        JSON.stringify({
+        `data: ${JSON.stringify({
           type: "claude_json",
           data: assistantMessage,
-        }),
+        })}`,
         mockContext,
       );
 
@@ -275,7 +275,7 @@ describe("useStreamParser", () => {
         .spyOn(console, "error")
         .mockImplementation(() => {});
 
-      result.current.processStreamLine("invalid json", mockContext);
+      result.current.processStreamLine("data: invalid json", mockContext);
 
       expect(consoleSpy).toHaveBeenCalledWith(
         "Failed to parse stream line:",
@@ -290,10 +290,10 @@ describe("useStreamParser", () => {
       const { result } = renderHook(() => useStreamParser());
 
       result.current.processStreamLine(
-        JSON.stringify({
+        `data: ${JSON.stringify({
           type: "claude_json",
           // data field is missing
-        }),
+        })}`,
         mockContext,
       );
 
@@ -304,10 +304,10 @@ describe("useStreamParser", () => {
       const { result } = renderHook(() => useStreamParser());
 
       result.current.processStreamLine(
-        JSON.stringify({
+        `data: ${JSON.stringify({
           type: "error",
           error: "Claude execution failed",
-        }),
+        })}`,
         mockContext,
       );
 
@@ -323,10 +323,10 @@ describe("useStreamParser", () => {
       const { result } = renderHook(() => useStreamParser());
 
       result.current.processStreamLine(
-        JSON.stringify({
+        `data: ${JSON.stringify({
           type: "error",
           // error field is missing
-        }),
+        })}`,
         mockContext,
       );
 
@@ -342,9 +342,9 @@ describe("useStreamParser", () => {
       const { result } = renderHook(() => useStreamParser());
 
       result.current.processStreamLine(
-        JSON.stringify({
+        `data: ${JSON.stringify({
           type: "aborted",
-        }),
+        })}`,
         mockContext,
       );
 
@@ -386,10 +386,10 @@ describe("useStreamParser", () => {
       };
 
       result.current.processStreamLine(
-        JSON.stringify({
+        `data: ${JSON.stringify({
           type: "claude_json",
           data: assistantMessage,
-        }),
+        })}`,
         mockContext,
       );
 
@@ -434,10 +434,10 @@ describe("useStreamParser", () => {
       };
 
       result.current.processStreamLine(
-        JSON.stringify({
+        `data: ${JSON.stringify({
           type: "claude_json",
           data: assistantMessage,
-        }),
+        })}`,
         mockContext,
       );
 
@@ -486,10 +486,10 @@ describe("useStreamParser", () => {
       };
 
       result.current.processStreamLine(
-        JSON.stringify({
+        `data: ${JSON.stringify({
           type: "claude_json",
           data: assistantMessage,
-        }),
+        })}`,
         mockContext,
       );
 

@@ -96,7 +96,19 @@ export function useStreamParser() {
   const processStreamLine = useCallback(
     (line: string, context: StreamingContext) => {
       try {
-        const data: StreamResponse = JSON.parse(line);
+        // SSE format: "data: {...}\n\n"
+        // Extract JSON from SSE format
+        if (!line.startsWith("data: ")) {
+          // Skip empty lines or non-data lines
+          return;
+        }
+
+        const jsonStr = line.slice(6); // Remove "data: " prefix
+        if (!jsonStr.trim()) {
+          return;
+        }
+
+        const data: StreamResponse = JSON.parse(jsonStr);
 
         if (data.type === "claude_json" && data.data) {
           // data.data is already an SDKMessage object, no need to parse
