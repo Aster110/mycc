@@ -3,6 +3,7 @@ import type {
   SDKAssistantMessage,
   SDKSystemMessage,
   SDKResultMessage,
+  SDKMessage,
   PermissionMode as SDKPermissionMode,
 } from "@anthropic-ai/claude-code";
 
@@ -234,7 +235,9 @@ export interface ConversationHistory {
 export type StreamResponse =
   | { type: "claude_json"; data: unknown }
   | { type: "error"; error: string }
-  | { type: "aborted" };
+  | { type: "aborted" }
+  | { type: "done"; sessionId?: string }
+  | SDKMessage; // Backend returns SDKMessage directly
 
 export interface ChatRequest {
   message: string;

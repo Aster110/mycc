@@ -156,6 +156,10 @@ export class HttpServer {
           await this.handleBillingUsage(req, res);
           return;
         }
+        if (url.pathname === "/api/billing/upgrade" && req.method === "POST") {
+          await this.handleBillingUpgrade(req, res);
+          return;
+        }
       }
 
       // 静态资源路由（不需要认证）
@@ -165,13 +169,15 @@ export class HttpServer {
       }
 
       // 需要认证的路由
-      if (url.pathname === "/chat" && req.method === "POST") {
+      if (url.pathname === "/api/chat" && req.method === "POST") {
         await this.handleChat(req, res);
-      } else if (url.pathname === "/history/list" && req.method === "GET") {
+      } else if (url.pathname === "/api/projects" && req.method === "GET") {
+        await this.handleProjects(req, res);
+      } else if (url.pathname.match(/^\/api\/projects\/[^/]+\/histories$/) && req.method === "GET") {
         await this.handleHistoryList(req, res);
-      } else if (url.pathname.startsWith("/history/") && req.method === "GET") {
+      } else if (url.pathname.match(/^\/api\/projects\/[^/]+\/histories\/[^/]+$/) && req.method === "GET") {
         await this.handleHistoryDetail(req, res, url.pathname);
-      } else if (url.pathname === "/chat/rename" && req.method === "POST") {
+      } else if (url.pathname === "/api/chat/rename" && req.method === "POST") {
         await this.handleRename(req, res);
       } else if (url.pathname === "/" && req.method === "GET") {
         // Serve 前端页面
@@ -369,6 +375,70 @@ export class HttpServer {
     }
   }
 
+  private async handleBillingUpgrade(req: http.IncomingMessage, res: http.ServerResponse) {
+    const user = this.getUserFromToken(req);
+    if (!user) {
+      res.writeHead(401, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ code: 401, message: "未授权" }));
+      return;
+    }
+
+    try {
+      const body = await this.readBody(req);
+      const { plan } = JSON.parse(body);
+
+      // 验证套餐类型
+      if (!['basic', 'pro'].includes(plan)) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ code: 400, message: "无效的套餐类型" }));
+        return;
+      }
+
+      // 获取当前订阅信息
+      const userInfo = await getCurrentUser(user.userId);
+      if (!userInfo.subscription) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ code: 500, message: "用户订阅信息不存在" }));
+        return;
+      }
+      const currentPlan = userInfo.subscription.plan;
+
+      // 检查是否降级（不允许）
+      const planOrder: Record<string, number> = { free: 0, basic: 1, pro: 2 };
+      if (planOrder[plan] <= planOrder[currentPlan]) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ code: 400, message: "不支持降级或重复升级" }));
+        return;
+      }
+
+      // 执行升级
+      const { upgradePlan } = await import("./db/client.js");
+      await upgradePlan(user.userId, plan);
+
+      // 获取新的订阅信息
+      const newUserInfo = await getCurrentUser(user.userId);
+      if (!newUserInfo.subscription) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ code: 500, message: "升级后订阅信息不存在" }));
+        return;
+      }
+
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({
+        code: 0,
+        data: {
+          plan: newUserInfo.subscription.plan,
+          tokens_limit: newUserInfo.subscription.tokens_limit,
+          expires_at: newUserInfo.subscription.expires_at,
+        }
+      }));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "升级套餐失败";
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ code: 500, message }));
+    }
+  }
+
   // ============ 需要认证的路由 ============
 
   private async handleChat(req: http.IncomingMessage, res: http.ServerResponse) {
@@ -464,6 +534,35 @@ export class HttpServer {
     }
   }
 
+  private async handleProjects(req: http.IncomingMessage, res: http.ServerResponse) {
+    const auth = this.authenticateRequest(req, res);
+    if (!auth) return;
+
+    try {
+      // 多用户模式：返回用户的工作目录作为项目
+      // 单用户模式：返回当前工作目录
+      const projectPath = auth.cwd;
+      console.log(`[Projects] Original path: ${projectPath}`);
+
+      // 使用和 Claude Code SDK 一致的编码方式
+      const { encodeProjectPath } = await import("./history.js");
+      const encodedName = encodeProjectPath(projectPath);
+      console.log(`[Projects] Encoded name: ${encodedName}`);
+
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({
+        projects: [{
+          path: projectPath,
+          encodedName: encodedName
+        }]
+      }));
+    } catch (error) {
+      console.error("[Projects] Error:", error);
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "获取项目列表失败" }));
+    }
+  }
+
   private async handleHistoryList(req: http.IncomingMessage, res: http.ServerResponse) {
     const auth = this.authenticateRequest(req, res);
     if (!auth) return;
@@ -491,10 +590,17 @@ export class HttpServer {
     const auth = this.authenticateRequest(req, res);
     if (!auth) return;
 
-    // 提取 sessionId: /history/{sessionId}
-    const sessionId = pathname.replace("/history/", "");
+    // 提取 sessionId: /api/projects/{encodedPath}/histories/{sessionId}
+    const match = pathname.match(/^\/api\/projects\/[^/]+\/histories\/([^/]+)$/);
+    if (!match) {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "无效的路径格式" }));
+      return;
+    }
 
-    if (!sessionId || sessionId === "list") {
+    const sessionId = match[1];
+
+    if (!sessionId) {
       res.writeHead(400, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: "无效的 sessionId" }));
       return;

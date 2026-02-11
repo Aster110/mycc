@@ -3,7 +3,7 @@
  * 读取 ~/.claude/projects/{encodedProjectName}/ 下的 JSONL 文件
  */
 
-import { readFileSync, readdirSync, existsSync, writeFileSync, renameSync, appendFileSync, statSync } from "fs";
+import { readFileSync, readdirSync, existsSync, writeFileSync, renameSync, appendFileSync, statSync, realpathSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
 import type { RawHistoryLine, ConversationSummary, ConversationHistory } from "./types.js";
@@ -56,8 +56,16 @@ function stripSystemTags(text: string): string {
  * 自动检测项目根目录（查找 .claude/ 或 CLAUDE.md），确保历史记录路径一致性
  */
 export function encodeProjectPath(projectPath: string): string {
+  // 解析符号链接，确保路径一致性（例如 /tmp -> /private/tmp）
+  let resolvedPath = projectPath;
+  try {
+    resolvedPath = realpathSync(projectPath);
+  } catch {
+    // 如果路径不存在或无法解析，使用原路径
+  }
+
   // 先找到项目根目录（统一逻辑，避免历史记录分散）
-  const root = findProjectRoot(projectPath) || projectPath;
+  const root = findProjectRoot(resolvedPath) || resolvedPath;
 
   // 再编码
   return root.replace(/\/$/, "").replace(/[/\\:._]/g, "-");
@@ -586,15 +594,76 @@ export function getConversationList(cwd: string): ConversationSummary[] {
     // 扫描活跃会话
     const activeSessions = scanActiveConversations(cwd);
 
+    // 如果两者都为空，尝试降级扫描所有文件
+    if (indexedSessions.length === 0 && activeSessions.length === 0) {
+      console.log("[getConversationList] No indexed or active sessions, trying scanAllConversations");
+      return scanAllConversations(cwd);
+    }
+
     // 合并并返回
     return mergeConversationLists(indexedSessions, activeSessions);
   } catch (error) {
     console.error("[getConversationList] Failed:", error);
-    // 降级处理：只返回索引会话
+    // 降级处理：尝试从索引读取
     try {
-      return getConversationListFromIndex(cwd);
+      const indexed = getConversationListFromIndex(cwd);
+      if (indexed.length > 0) {
+        return indexed;
+      }
+    } catch {}
+
+    // 如果索引也失败，降级扫描所有文件（不管权限）
+    try {
+      return scanAllConversations(cwd);
     } catch {
       return [];
     }
   }
+}
+
+/**
+ * 降级方案：扫描所有会话文件（不管权限）
+ */
+function scanAllConversations(cwd: string): ConversationSummary[] {
+  console.log(`[scanAllConversations] Scanning cwd: ${cwd}`);
+  const historyDir = getHistoryDir(cwd);
+  console.log(`[scanAllConversations] History dir: ${historyDir}`);
+
+  if (!existsSync(historyDir)) {
+    console.log(`[scanAllConversations] History dir does not exist`);
+    return [];
+  }
+
+  const files = readdirSync(historyDir).filter(f => f.endsWith(".jsonl"));
+  console.log(`[scanAllConversations] Found ${files.length} .jsonl files`);
+  const conversations: ConversationSummary[] = [];
+
+  for (const file of files) {
+    const filePath = join(historyDir, file);
+    const sessionId = file.replace(".jsonl", "");
+
+    try {
+      console.log(`[scanAllConversations] Parsing ${file}...`);
+      const summary = parseActiveSessionSummary(filePath, sessionId, cwd);
+      if (summary) {
+        console.log(`[scanAllConversations] Successfully parsed ${file}`);
+        conversations.push(summary);
+      } else {
+        console.log(`[scanAllConversations] parseActiveSessionSummary returned null for ${file}`);
+      }
+    } catch (error) {
+      console.error(`[scanAllConversations] Failed to parse ${file}:`, error);
+    }
+  }
+
+  console.log(`[scanAllConversations] Total conversations: ${conversations.length}`);
+
+  // 按修改时间倒序排序
+  conversations.sort((a, b) => {
+    const timeA = a.modified ? new Date(a.modified).getTime() : 0;
+    const timeB = b.modified ? new Date(b.modified).getTime() : 0;
+    return timeB - timeA;
+  });
+
+  return conversations;
 }

@@ -1,0 +1,40 @@
+{
+  "name": "mycc-backend",
+  "version": "1.0.0",
+  "description": "MyCC 商业化后端服务",
+  "main": "dist/index.js",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "test": "vitest"
+  },
+  "keywords": [
+    "mycc",
+    "claude",
+    "backend"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@anthropic-ai/claude-code": "^1.0.128",
+    "@fastify/cors": "^9.0.1",
+    "bcrypt": "^5.1.1",
+    "dotenv": "^16.4.5",
+    "fastify": "^4.26.2",
+    "ioredis": "^5.3.2",
+    "jsonwebtoken": "^9.0.2",
+    "pg": "^8.11.3",
+    "zod": "^3.22.4"
+  },
+  "devDependencies": {
+    "@types/bcrypt": "^5.0.2",
+    "@types/jsonwebtoken": "^9.0.6",
+    "@types/node": "^20.11.30",
+    "@types/pg": "^8.11.2",
+    "tsx": "^4.7.1",
+    "typescript": "^5.4.3",
+    "vitest": "^1.4.0"
+  }
+}

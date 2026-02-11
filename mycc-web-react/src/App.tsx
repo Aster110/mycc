@@ -1,6 +1,5 @@
 import { BrowserRouter as Router, Routes, Route } from "react-router-dom";
 import { Suspense, lazy } from "react";
-import { ProjectSelector } from "./components/ProjectSelector";
 import { ChatPage } from "./components/ChatPage";
 import { LoginPage } from "./components/LoginPage";
 import { SettingsProvider } from "./contexts/SettingsContext";
@@ -35,8 +34,8 @@ function App() {
     <SettingsProvider>
       <Router>
         <Routes>
-          <Route path="/" element={<ProjectSelector />} />
-          <Route path="/projects/*" element={<ChatPage />} />
+          {/* 多用户模式：直接进入聊天界面 */}
+          <Route path="/" element={<ChatPage />} />
           {DemoPage && (
             <Route
               path="/demo"

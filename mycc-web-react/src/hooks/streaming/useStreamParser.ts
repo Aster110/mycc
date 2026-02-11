@@ -110,10 +110,18 @@ export function useStreamParser() {
 
         const data: StreamResponse = JSON.parse(jsonStr);
 
-        if (data.type === "claude_json" && data.data) {
-          // data.data is already an SDKMessage object, no need to parse
+        // Handle direct message types from backend (system, assistant, result, etc.)
+        if (data.type === "system" || data.type === "assistant" || data.type === "result" || data.type === "user") {
+          // Backend returns messages directly, not wrapped in claude_json
+          const claudeData = data as SDKMessage;
+          processClaudeData(claudeData, context);
+        } else if (data.type === "claude_json" && data.data) {
+          // Legacy format: wrapped in claude_json
           const claudeData = data.data as SDKMessage;
           processClaudeData(claudeData, context);
+        } else if (data.type === "done") {
+          // Done message - just ignore, streaming is complete
+          return;
         } else if (data.type === "error") {
           const errorMessage: SystemMessage = {
             type: "error",

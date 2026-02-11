@@ -65,11 +65,19 @@ export async function executeChat(options: ChatOptions): Promise<void> {
 
 /**
  * 检查 CC CLI 是否可用
+ * 使用 detectClaudeCliPath 跨平台检测，避免 PATH 不完整导致找不到
  */
 export async function checkCCAvailable(): Promise<boolean> {
   try {
+    const { detectClaudeCliPath } = await import("./platform.js");
+    const { executable, cliPath } = detectClaudeCliPath();
     const { execSync } = await import("child_process");
-    execSync("claude --version", { stdio: "pipe" });
+
+    if (executable === "node") {
+      execSync(`node "${cliPath}" --version`, { stdio: "pipe" });
+    } else {
+      execSync(`"${cliPath}" --version`, { stdio: "pipe" });
+    }
     return true;
   } catch {
     return false;

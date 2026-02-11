@@ -59,8 +59,13 @@ export function ChatPage() {
 
   // Get encoded name for current working directory
   const getEncodedName = useCallback(() => {
-    if (!workingDirectory || !projects.length) {
+    if (!projects.length) {
       return null;
+    }
+
+    // If no workingDirectory specified or it's the root path, use the first project
+    if (!workingDirectory || workingDirectory === '/') {
+      return projects[0]?.encodedName || null;
     }
 
     const project = projects.find((p) => p.path === workingDirectory);
@@ -71,8 +76,8 @@ export function ChatPage() {
       (p) => normalizeWindowsPath(p.path) === normalizedWorking,
     );
 
-    // Use normalized result if exact match fails
-    const finalProject = project || normalizedProject;
+    // Use normalized result if exact match fails, or fallback to first project
+    const finalProject = project || normalizedProject || projects[0];
 
     return finalProject?.encodedName || null;
   }, [workingDirectory, projects]);

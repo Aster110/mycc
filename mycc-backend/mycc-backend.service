@@ -1,0 +1,44 @@
+[Unit]
+Description=MyCC Backend Service
+After=network.target postgresql.service redis.service
+Wants=postgresql.service redis.service
+
+[Service]
+Type=simple
+User=mycc_service
+Group=mycc_service
+WorkingDirectory=/home/mycc_service/mycc/mycc-backend
+
+# 环境变量
+Environment=NODE_ENV=production
+EnvironmentFile=/home/mycc_service/mycc/mycc-backend/.env
+
+# 启动命令
+ExecStart=/usr/bin/node dist/index.js
+
+# 重启策略
+Restart=always
+RestartSec=10
+StartLimitInterval=60
+StartLimitBurst=3
+
+# 资源限制
+LimitNOFILE=4096
+LimitNPROC=512
+MemoryMax=4G
+CPUQuota=200%
+
+# 日志
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=mycc-backend
+
+# 安全加固
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/home/mycc_service /tmp/mycc_dev
+
+[Install]
+WantedBy=multi-user.target

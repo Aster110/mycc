@@ -63,7 +63,11 @@ async function main() {
 
   switch (command) {
     case "start":
-      await startServer(args);
+      if (args.includes("--multi-user")) {
+        await startMultiUserServer(args);
+      } else {
+        await startServer(args);
+      }
       break;
     case "status":
       console.log("TODO: 显示状态");
@@ -161,7 +165,7 @@ async function startServer(args: string[]) {
   const { deviceId, pairCode, authToken } = config;
 
   // 启动 HTTP 服务器（传入已有的 authToken）
-  const server = new HttpServer(pairCode, cwd, authToken);
+  const server = new HttpServer({ pairCode, cwd, authToken });
 
   // 如果之前已配对，显示状态
   if (authToken) {
@@ -442,6 +446,62 @@ ${skillLine}
   });
 }
 
+// 多用户模式启动
+async function startMultiUserServer(args: string[]) {
+  // 加载 .env 环境变量
+  const dotenv = await import("dotenv");
+  const { join } = await import("path");
+  dotenv.config({ path: join(import.meta.dirname, '..', '..', '..', '..', 'mycc-backend', '.env') });
+
+  console.log(chalk.cyan("\n=== MyCC 多用户后端 ===\n"));
+
+  // 杀掉旧进程，确保端口可用
+  console.log(chalk.gray("检查端口占用..."));
+  await killPortProcess(Number(PORT));
+
+  // 检查 CC 是否可用
+  console.log("检查 Claude Code CLI...");
+  const ccAvailable = await checkCCAvailable();
+  if (!ccAvailable) {
+    console.error(chalk.red("错误: Claude Code CLI 未安装或不可用"));
+    console.error("请先安装: npm install -g @anthropic-ai/claude-code");
+    process.exit(1);
+  }
+  console.log(chalk.green("✓ Claude Code CLI 可用\n"));
+
+  // 多用户模式不需要 tunnel、pairCode、Worker 注册
+  const server = new HttpServer({ mode: "multi-user" });
+
+  try {
+    await server.start();
+  } catch (error: any) {
+    if (error.code === 'EADDRINUSE') {
+      console.error(chalk.red(`错误: 端口 ${PORT} 已被占用`));
+      console.error(chalk.yellow(`提示: lsof -i :${PORT}`));
+      process.exit(1);
+    }
+    throw error;
+  }
+
+  console.log(chalk.green("✓ 多用户后端已就绪"));
+  console.log(chalk.gray(`  地址: http://localhost:${PORT}`));
+  console.log(chalk.gray(`  模式: multi-user (JWT 认证)`));
+  console.log(chalk.gray(`  环境: ${process.env.NODE_ENV || 'production'}\n`));
+  console.log(chalk.gray("按 Ctrl+C 退出\n"));
+
+  // 处理退出
+  process.on("SIGINT", () => {
+    console.log(chalk.yellow("\n正在退出..."));
+    server.stop();
+    process.exit(0);
+  });
+
+  process.on("SIGTERM", () => {
+    server.stop();
+    process.exit(0);
+  });
+}
+
 // 向 Worker 注册 tunnel URL，返回 { token, isNewDevice }
 async function registerToWorker(
   tunnelUrl: string,
@@ -576,6 +636,7 @@ ${chalk.yellow("用法:")}
 ${chalk.yellow("选项:")}
   --cwd <目录>          指定工作目录 (默认: 当前目录)
   --reset               重置设备配置，重新生成连接码和配对码
+  --multi-user          多用户模式（JWT 认证，无需 tunnel）
 
 ${chalk.yellow("环境变量:")}
   PORT                  HTTP 服务端口 (默认: 8080)
@@ -583,7 +644,8 @@ ${chalk.yellow("环境变量:")}
 ${chalk.yellow("示例:")}
   cc-mp start
   cc-mp start --cwd /path/to/project
-  cc-mp start --reset   # 重置配置，需要重新配对
+  cc-mp start --reset        # 重置配置，需要重新配对
+  cc-mp start --multi-user   # 多用户模式启动
 `);
 }
 
