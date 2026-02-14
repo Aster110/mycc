@@ -439,6 +439,7 @@ ${skillLine}
       // Ctrl+C
       if (key[0] === 3) {
         console.log(chalk.yellow("\n正在退出..."));
+        adapter.closeAllSessions();
         tunnelManager?.stop();
         stopScheduler();
         server.stop();
@@ -454,6 +455,7 @@ ${skillLine}
   // 处理退出
   process.on("SIGINT", () => {
     console.log(chalk.yellow("\n正在退出..."));
+    adapter.closeAllSessions();
     tunnelManager?.stop();
     stopScheduler();
     server.stop();
@@ -461,6 +463,7 @@ ${skillLine}
   });
 
   process.on("SIGTERM", () => {
+    adapter.closeAllSessions();
     tunnelManager?.stop();
     stopScheduler();
     server.stop();
