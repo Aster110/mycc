@@ -20,7 +20,7 @@ export async function register(data: RegisterRequest): Promise<AuthResponse> {
   return res.json();
 }
 
-export async function getCurrentUser(token: string): Promise<{ code: number; data?: User; message?: string }> {
+export async function getCurrentUser(token: string): Promise<{ success: boolean; data?: User; error?: string }> {
   const res = await fetch(`${API_BASE}/api/auth/me`, {
     headers: { 'Authorization': `Bearer ${token}` },
   });

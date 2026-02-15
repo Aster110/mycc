@@ -1,6 +1,7 @@
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
 import { createUser, findUserByCredential, findUserById, getSubscription } from '../db/client.js';
+import { vpsUserManager } from '../vps/user-manager.js';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'your_jwt_secret_change_in_production';
 const JWT_EXPIRES_IN = '24h';
@@ -63,10 +64,10 @@ export async function register(params: {
     { expiresIn: JWT_EXPIRES_IN }
   );
 
-  // 在开发环境创建用户工作目录
-  if (process.env.NODE_ENV === 'development') {
-    await createDevUserWorkspace(user.linux_user);
-  }
+  // 异步创建 VPS 用户（不阻塞注册流程）
+  vpsUserManager.createUser(user.linux_user).catch(err => {
+    console.error(`❌ 异步创建 VPS 用户失败 (${user.linux_user}):`, err);
+  });
 
   return {
     token,
@@ -162,19 +163,3 @@ export async function getCurrentUser(userId: number) {
   };
 }
 
-// 开发环境：创建用户工作目录
-async function createDevUserWorkspace(linuxUser: string): Promise<void> {
-  const { exec } = await import('child_process');
-  const { promisify } = await import('util');
-  const execAsync = promisify(exec);
-
-  const workspaceDir = `/tmp/mycc_dev/${linuxUser}/workspace`;
-
-  try {
-    await execAsync(`mkdir -p ${workspaceDir}/.claude/projects`);
-    await execAsync(`mkdir -p /tmp/mycc_dev/${linuxUser}/.mycc`);
-    console.log(`✅ 创建开发环境工作目录: ${workspaceDir}`);
-  } catch (err) {
-    console.error(`❌ 创建工作目录失败:`, err);
-  }
-}

@@ -20,10 +20,10 @@ export interface RegisterRequest {
 }
 
 export interface AuthResponse {
-  code: number;
+  success: boolean;
   data?: {
     token: string;
     user: User;
   };
-  message?: string;
+  error?: string;
 }

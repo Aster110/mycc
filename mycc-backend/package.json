@@ -26,6 +26,7 @@
     "ioredis": "^5.3.2",
     "jsonwebtoken": "^9.0.2",
     "pg": "^8.11.3",
+    "ssh2": "^1.17.0",
     "zod": "^3.22.4"
   },
   "devDependencies": {
@@ -33,6 +34,7 @@
     "@types/jsonwebtoken": "^9.0.6",
     "@types/node": "^20.11.30",
     "@types/pg": "^8.11.2",
+    "@types/ssh2": "^1.15.5",
     "tsx": "^4.7.1",
     "typescript": "^5.4.3",
     "vitest": "^1.4.0"

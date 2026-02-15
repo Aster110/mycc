@@ -22,7 +22,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (token) {
       getCurrentUser(token)
         .then(res => {
-          if (res.code === 0 && res.data) {
+          if (res.success && res.data) {
             setUser(res.data);
           } else {
             localStorage.removeItem('token');

@@ -5,11 +5,12 @@ import { login as apiLogin, register as apiRegister } from '../api/auth';
 export function LoginPage() {
   const { login } = useAuth();
   const [mode, setMode] = useState<'login' | 'register'>('login');
-  const [credential, setCredential] = useState('');
+  const isDev = import.meta.env.DEV;
+  const [credential, setCredential] = useState(isDev ? '+8613800138000' : '');
   const [phone, setPhone] = useState('');
   const [email, setEmail] = useState('');
   const [nickname, setNickname] = useState('');
-  const [password, setPassword] = useState('');
+  const [password, setPassword] = useState(isDev ? 'test123456' : '');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
@@ -19,10 +20,10 @@ export function LoginPage() {
     setLoading(true);
     try {
       const res = await apiLogin({ credential, password });
-      if (res.code === 0 && res.data) {
+      if (res.success && res.data) {
         login(res.data.token, res.data.user);
       } else {
-        setError(res.message || '登录失败');
+        setError(res.error || '登录失败');
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : '登录失败');
@@ -37,10 +38,10 @@ export function LoginPage() {
     setLoading(true);
     try {
       const res = await apiRegister({ phone, email, password, nickname });
-      if (res.code === 0 && res.data) {
+      if (res.success && res.data) {
         login(res.data.token, res.data.user);
       } else {
-        setError(res.message || '注册失败');
+        setError(res.error || '注册失败');
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : '注册失败');

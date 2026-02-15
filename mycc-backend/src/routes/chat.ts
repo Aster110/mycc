@@ -1,10 +1,12 @@
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import path from 'path';
 import { jwtAuthMiddleware } from '../middleware/jwt.js';
 import { concurrencyLimiter } from '../concurrency-limiter.js';
 import { checkQuota, logUsage, upsertConversation, updateConversationStats } from '../db/client.js';
-// 复用原有的 OfficialAdapter（已支持多用户）
-import { OfficialAdapter } from '../../../.claude/skills/mycc/scripts/src/adapters/official.js';
+import { RemoteClaudeAdapter } from '../adapters/remote-claude-adapter.js';
+import { extractSessionId, extractUsage, extractModel } from '../adapters/stream-parser.js';
+import { validateLinuxUsername, validatePathPrefix } from '../utils/validation.js';
 
 // 发送消息请求验证
 const chatSchema = z.object({
@@ -43,14 +45,21 @@ export async function chatRoutes(fastify: FastifyInstance) {
       // 获取并发许可
       await concurrencyLimiter.acquire(userId);
 
-      // 获取用户工作目录
-      const isDev = process.env.NODE_ENV === 'development';
-      const cwd = isDev
-        ? `/tmp/mycc_dev/${linuxUser}/workspace`
-        : `/home/${linuxUser}/workspace`;
+      // 验证 linuxUser 格式
+      if (!validateLinuxUsername(linuxUser)) {
+        return reply.status(400).send({ error: 'Invalid user format' });
+      }
 
-      // 创建 Adapter（复用原有的 OfficialAdapter）
-      const adapter = new OfficialAdapter();
+      // 获取用户工作目录（VPS 上统一使用 /home/{linuxUser}/workspace）
+      const cwd = path.join('/home', linuxUser, 'workspace');
+
+      // 验证路径安全性
+      if (!validatePathPrefix(cwd, '/home/')) {
+        return reply.status(400).send({ error: 'Invalid path' });
+      }
+
+      // 创建 RemoteClaudeAdapter
+      const adapter = new RemoteClaudeAdapter();
 
       // 设置 SSE 响应头
       reply.raw.writeHead(200, {
@@ -72,23 +81,26 @@ export async function chatRoutes(fastify: FastifyInstance) {
           message: body.message,
           sessionId: body.sessionId,
           cwd,
+          linuxUser,
           images: body.images,
         })) {
           // 提取 session_id
-          if (event.type === 'system' && 'session_id' in event) {
-            currentSessionId = event.session_id as string;
+          const sessionId = extractSessionId(event);
+          if (sessionId) {
+            currentSessionId = sessionId;
           }
 
           // 提取 usage 信息
-          if (event.type === 'usage' && 'usage' in event) {
-            const usage = event.usage as any;
-            totalInputTokens += usage.input_tokens || 0;
-            totalOutputTokens += usage.output_tokens || 0;
+          const usage = extractUsage(event);
+          if (usage) {
+            totalInputTokens += usage.inputTokens;
+            totalOutputTokens += usage.outputTokens;
           }
 
           // 提取 model 信息
-          if (event.type === 'system' && 'model' in event) {
-            model = event.model as string;
+          const modelName = extractModel(event);
+          if (modelName) {
+            model = modelName;
           }
 
           // 发送事件
@@ -162,12 +174,20 @@ export async function chatRoutes(fastify: FastifyInstance) {
 
     try {
       const { limit = '20', offset = '0' } = request.query as { limit?: string; offset?: string };
+
+      // 验证分页参数
+      const limitNum = parseInt(limit);
+      const offsetNum = parseInt(offset);
+      if (isNaN(limitNum) || isNaN(offsetNum) || limitNum < 0 || offsetNum < 0 || limitNum > 100) {
+        return reply.status(400).send({ error: 'Invalid pagination parameters' });
+      }
+
       const { getUserConversations } = await import('../db/client.js');
 
       const conversations = await getUserConversations(
         request.user.userId,
-        parseInt(limit),
-        parseInt(offset)
+        limitNum,
+        offsetNum
       );
 
       return reply.send({
@@ -198,10 +218,10 @@ export async function chatRoutes(fastify: FastifyInstance) {
       const { sessionId } = request.params as { sessionId: string };
       const { newTitle } = request.body as { newTitle: string };
 
-      if (!newTitle || typeof newTitle !== 'string') {
+      if (!newTitle || typeof newTitle !== 'string' || newTitle.length === 0 || newTitle.length > 200) {
         return reply.status(400).send({
           success: false,
-          error: 'newTitle 必须是非空字符串',
+          error: 'newTitle 必须是 1-200 字符的字符串',
         });
       }
 
