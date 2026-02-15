@@ -36,12 +36,16 @@ const CLEANUP_INTERVAL_MS = 5 * 60 * 1000;
  * 构造 v2 SDKSessionOptions
  */
 function buildSessionOptions(model?: string) {
+  // 清除 CLAUDECODE 环境变量，避免嵌套会话检测
+  const cleanEnv = { ...process.env };
+  delete cleanEnv.CLAUDECODE;
+
   const options: Parameters<typeof unstable_v2_createSession>[0] = {
     model: model || DEFAULT_MODEL,
     pathToClaudeCodeExecutable: CLAUDE_CLI_PATH,
     permissionMode: "bypassPermissions",
     env: {
-      ...process.env,
+      ...cleanEnv,
       CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: "1",
     },
   };
