@@ -60,7 +60,7 @@ export class FeishuChannel implements MessageChannel {
   // WebSocket 相关
   private wsClient: Lark.WSClient | null = null;
   private eventDispatcher: Lark.EventDispatcher | null = null;
-  private messageCallback: ((message: string, messageId?: string) => void) | null = null;
+  private messageCallback: ((message: string, images?: Array<{ data: string; mediaType: string }>, messageId?: string) => void) | null = null;
 
   // 表态相关（"正在输入" emoji）
   private currentMessageId: string | null = null;
@@ -218,7 +218,7 @@ export class FeishuChannel implements MessageChannel {
    * 设置消息接收回调
    * @param callback - 收到飞书消息时的回调函数
    */
-  onMessage(callback: (message: string) => void): void {
+  onMessage(callback: (message: string, images?: Array<{ data: string; mediaType: string }>, messageId?: string) => void): void {
     this.messageCallback = callback;
   }
 
@@ -284,13 +284,17 @@ export class FeishuChannel implements MessageChannel {
               });
             }
 
-            const content = this.parseFeishuMessage(event);
-            if (content && this.messageCallback) {
-              console.log(`[FeishuChannel] ✓ 收到消息: ${content.substring(0, 50)}...`);
-              // 传递消息 ID，以便后续可以删除表态
-              this.messageCallback(content, messageId);
-            } else if (!content) {
-              console.log("[FeishuChannel] [DEBUG] 解析消息内容为空");
+            // await 解析结果（图片下载是异步的）
+            const parsed = await this.parseFeishuMessage(event);
+            if (parsed && this.messageCallback) {
+              const { text, images } = parsed;
+              if (text || images) {
+                console.log(`[FeishuChannel] ✓ 收到消息: ${text ? text.substring(0, 50) : "[图片]"}...`);
+                // 传递消息 ID，以便后续可以删除表态
+                this.messageCallback(text, images, messageId);
+              } else {
+                console.log("[FeishuChannel] [DEBUG] 解析消息内容为空");
+              }
             }
           } catch (err) {
             console.error("[FeishuChannel] 消息处理错误:", err);
@@ -338,12 +342,12 @@ export class FeishuChannel implements MessageChannel {
   }
 
   /**
-   * 解析飞书消息
+   * 解析飞书消息（异步，支持图片下载）
    */
-  private parseFeishuMessage(event: any): string | null {
+  private parseFeishuMessage(event: any): Promise<{ text: string; images?: Array<{ data: string; mediaType: string }> } | null> {
     try {
       // 事件结构: event.sender + event.message（不是 event.event.message）
-      if (!event?.message) return null;
+      if (!event?.message) return Promise.resolve(null);
 
       const message = event.message;
       const messageType = message.message_type;
@@ -353,18 +357,36 @@ export class FeishuChannel implements MessageChannel {
         // 文本消息 - content 是 JSON 字符串
         if (typeof content === "string") {
           const parsed = JSON.parse(content);
-          return parsed.text || "";
+          return Promise.resolve({ text: parsed.text || "" });
         }
         // 兜底：content 可能已经是对象
-        return content?.text || "";
+        return Promise.resolve({ text: content?.text || "" });
+      }
+
+      if (messageType === "image") {
+        // 图片消息 - content 是 JSON 字符串
+        console.log(`[FeishuChannel] 收到图片消息`);
+        if (typeof content === "string") {
+          const parsed = JSON.parse(content);
+          const imageKey = parsed.image_key;
+          if (imageKey) {
+            // 需要通过飞书 API 获取图片数据
+            return this.downloadImageFromFeishu(imageKey).then(data => ({
+              text: "",
+              images: data ? [{ data, mediaType: "image/png" }] : undefined
+            }));
+          }
+        }
+        console.log(`[FeishuChannel] 图片消息没有 image_key`);
+        return Promise.resolve({ text: "" });
       }
 
       // 其他类型消息暂不支持
       console.log(`[FeishuChannel] 暂不支持的消息类型: ${messageType}`);
-      return null;
+      return Promise.resolve(null);
     } catch (err) {
       console.error("[FeishuChannel] 解析消息失败:", err);
-      return null;
+      return Promise.resolve(null);
     }
   }
 
@@ -525,6 +547,42 @@ export class FeishuChannel implements MessageChannel {
       return null;
     } catch (error) {
       console.error("[FeishuChannel] ✗ Upload error:", error);
+      return null;
+    }
+  }
+
+  /**
+   * 从飞书下载图片（通过 image_key 获取 base64 数据）
+   */
+  private async downloadImageFromFeishu(imageKey: string): Promise<string | null> {
+    try {
+      // 获取访问令牌（如果需要）
+      if (!this.accessToken || Date.now() > this.tokenExpireTime) {
+        this.accessToken = await this.getAccessToken();
+        if (!this.accessToken) {
+          return null;
+        }
+      }
+
+      // 下载图片
+      const response = await fetch(`https://open.feishu.cn/open-apis/im/v1/images/${imageKey}`, {
+        method: "GET",
+        headers: {
+          "Authorization": `Bearer ${this.accessToken}`,
+        },
+      });
+
+      if (!response.ok) {
+        console.error(`[FeishuChannel] ✗ Download failed: ${response.status}`);
+        return null;
+      }
+
+      // 获取图片数据并转换为 base64
+      const buffer = await response.arrayBuffer();
+      const base64 = Buffer.from(buffer).toString("base64");
+      return base64;
+    } catch (error) {
+      console.error("[FeishuChannel] ✗ Download error:", error);
       return null;
     }
   }

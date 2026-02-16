@@ -15,6 +15,8 @@ import { validateImages, type ImageData } from "./image-utils.js";
 import { renameSession } from "./history.js";
 import { listSkills } from "./skills.js";
 import { ChannelManager, WebChannel, FeishuChannel } from "./channels/index.js";
+import { loadConfig } from "./config.js";
+import type { DeviceConfig } from "./types.js";
 
 const PORT = process.env.PORT || 18080;
 
@@ -57,8 +59,8 @@ export class HttpServer {
     if (process.env.FEISHU_APP_ID && process.env.FEISHU_APP_SECRET) {
       this.feishuChannel = new FeishuChannel();
       // 设置飞书消息回调
-      this.feishuChannel.onMessage(async (message: string) => {
-        await this.processFeishuMessage(message);
+      this.feishuChannel.onMessage(async (message: string, images?: Array<{ data: string; mediaType: string }>) => {
+        await this.processFeishuMessage(message, images);
       });
       this.channelManager.register(this.feishuChannel);
       console.log("[Channels] 飞书通道已启用");
@@ -309,8 +311,8 @@ export class HttpServer {
    * - 命令以 / 开头，如 /new, /sessions, /switch, /help
    * - 普通消息会使用当前活跃会话（如果有）
    */
-  private async processFeishuMessage(message: string): Promise<void> {
-    console.log(`[CC] 收到飞书消息: ${message.substring(0, 50)}...`);
+  private async processFeishuMessage(message: string, images?: Array<{ data: string; mediaType: string }>): Promise<void> {
+    console.log(`[CC] 收到飞书消息: ${message.substring(0, 50)}...${images ? ` [${images.length} 张图片]` : ""}`);
 
     const trimmedMessage = message.trim();
 
@@ -365,6 +367,7 @@ export class HttpServer {
         message: trimmedMessage,
         sessionId: this.currentSessionId,
         cwd: this.cwd,
+        images: images,
       })) {
         // 更新 session_id（如果返回了新的）
         if (data && typeof data === "object") {
@@ -448,6 +451,11 @@ export class HttpServer {
 
         case "/current":
           await this.handleCurrentSession();
+          break;
+
+        case "/device":
+        case "/devices":
+          await this.handleDevice();
           break;
 
         case "/help":
@@ -672,6 +680,52 @@ export class HttpServer {
   }
 
   /**
+   * 显示设备信息
+   */
+  private async handleDevice(): Promise<void> {
+    console.log("[CC] 查询设备信息");
+
+    try {
+      const config = loadConfig(this.cwd) as DeviceConfig;
+
+      if (!config) {
+        await this.sendToFeishu("❌ 未找到设备配置");
+        return;
+      }
+
+      const createdAt = new Date(config.createdAt);
+      const createdTimeStr = createdAt.toLocaleString("zh-CN", {
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+
+      let output = "📱 当前设备信息\n\n";
+      output += `设备 ID: ${config.deviceId}\n`;
+      output += `配对码: ${config.pairCode}\n`;
+
+      if (config.routeToken) {
+        output += `连接码: ${config.routeToken}\n`;
+      }
+
+      if (config.authToken) {
+        output += `状态: ✅ 已配对\n`;
+      } else {
+        output += `状态: ⏳ 未配对\n`;
+      }
+
+      output += `\n创建时间: ${createdTimeStr}`;
+
+      await this.sendToFeishu(output);
+    } catch (err) {
+      console.error(`[CC] 获取设备信息错误:`, err);
+      await this.sendToFeishu("❌ 获取设备信息失败，请重试。");
+    }
+  }
+
+  /**
    * 显示帮助信息
    */
   private async handleHelp(): Promise<void> {
@@ -682,12 +736,15 @@ export class HttpServer {
       "/sessions - 查看历史会话\n" +
       "/switch <序号> - 切换到某个会话\n" +
       "/current - 显示当前会话信息\n\n" +
+      "**设备管理**\n" +
+      "/device - 查看当前设备信息\n\n" +
       "**其他**\n" +
       "/help - 显示此帮助信息\n\n" +
       "**示例**\n" +
       "/new 分析代码\n" +
       "/sessions\n" +
-      "/switch 1\n\n" +
+      "/switch 1\n" +
+      "/device\n\n" +
       "💡 提示：非命令消息会发送到当前活跃会话";
 
     await this.sendToFeishu(helpText);
