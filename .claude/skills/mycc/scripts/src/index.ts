@@ -30,7 +30,7 @@ import { startScheduler, stopScheduler, type Task } from "./scheduler.js";
 import { adapter } from "./adapters/index.js";
 import { CloudflareProvider } from "./tunnel-provider.js";
 import { TunnelManager } from "./tunnel-manager.js";
-import { loadPublicUrl } from "./env-loader.js";
+import { loadPublicUrl, loadEnvFile } from "./env-loader.js";
 
 const PORT = process.env.PORT || 18080;
 const WORKER_URL = process.env.WORKER_URL || "https://api.mycc.dev";
@@ -95,9 +95,11 @@ async function startServer(args: string[]) {
   }
   console.log(chalk.green("✓ Claude Code CLI 可用\n"));
 
-  // 检测公网模式（读取 .env 中的 PUBLIC_URL）
-  // 搜索顺序：cwd → 脚本所在目录（scripts/）
+  // 加载 .env 文件到 process.env（搜索顺序：cwd → scripts/）
   const scriptsDir = new URL("..", import.meta.url).pathname;
+  loadEnvFile(process.cwd(), scriptsDir);
+
+  // 检测公网模式（读取 .env 中的 PUBLIC_URL）
   const publicUrl = loadPublicUrl(process.cwd(), scriptsDir);
   const isPublicMode = !!publicUrl;
 

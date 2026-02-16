@@ -39,6 +39,7 @@ export class HttpServer {
   private isTls: boolean;
   private channelManager: ChannelManager;
   private currentSessionId: string | null = null; // 保存当前活跃会话 ID
+  private feishuChannel: FeishuChannel | null = null; // 保存飞书通道实例
 
   constructor(pairCode: string, cwd: string, authToken?: string, tls?: TlsConfig) {
     this.cwd = cwd;
@@ -54,12 +55,12 @@ export class HttpServer {
 
     // 注册飞书通道（如果配置了环境变量）
     if (process.env.FEISHU_APP_ID && process.env.FEISHU_APP_SECRET) {
-      const feishuChannel = new FeishuChannel();
+      this.feishuChannel = new FeishuChannel();
       // 设置飞书消息回调
-      feishuChannel.onMessage(async (message: string) => {
+      this.feishuChannel.onMessage(async (message: string) => {
         await this.processFeishuMessage(message);
       });
-      this.channelManager.register(feishuChannel);
+      this.channelManager.register(this.feishuChannel);
       console.log("[Channels] 飞书通道已启用");
     }
 
@@ -269,12 +270,12 @@ export class HttpServer {
           }
         }
 
-        // 广播到所有通道（Web + 飞书）
-        await this.channelManager.broadcast(data);
+        // 只发送到 Web 通道，不广播到飞书
+        await webChannel.send(data);
       }
 
-      // 完成 - 广播完成事件
-      await this.channelManager.broadcast({ type: "done", sessionId: currentSessionId });
+      // 完成 - 发送完成事件到 Web 通道
+      await webChannel.send({ type: "done", sessionId: currentSessionId } as any);
 
       // 注销 Web 通道
       this.channelManager.unregister(webChannelId);
@@ -285,8 +286,12 @@ export class HttpServer {
     } catch (error) {
       const errMsg = error instanceof Error ? error.message : String(error);
 
-      // 广播错误事件
-      await this.channelManager.broadcast({ type: "error", error: errMsg });
+      // 只发送错误到 Web 通道，不广播到飞书
+      try {
+        await webChannel.send({ type: "error", error: errMsg } as any);
+      } catch {
+        // 忽略发送错误
+      }
 
       // 确保注销 Web 通道
       this.channelManager.unregister(webChannelId);
@@ -317,17 +322,37 @@ export class HttpServer {
 
     // 普通对话：检查是否有活跃会话
     if (!this.currentSessionId) {
-      console.log(`[CC] 无活跃会话，显示帮助信息`);
+      console.log(`[CC] 无活跃会话，尝试自动选择最近的历史会话`);
 
-      const hintMessage = "💡 还没有活跃的会话。\n\n" +
-                         "你可以：\n" +
-                         "• 发送 /new - 创建新会话\n" +
-                         "• 发送 /sessions - 查看历史会话\n" +
-                         "• 发送 /help - 查看所有命令\n\n" +
-                         "或者在 Web 端（https://mycc.dev）开始对话，飞书会自动复用那个会话。";
+      // 尝试获取历史会话
+      try {
+        const result = await adapter.listHistory(this.cwd, 1);
+        if (result.conversations.length > 0) {
+          // 自动选择最近的一个会话
+          const latestSession = result.conversations[0];
+          this.currentSessionId = latestSession.sessionId;
 
-      await this.sendToFeishu(hintMessage);
-      return;
+          const title = latestSession.customTitle || latestSession.firstPrompt?.substring(0, 30) || "历史会话";
+          const timeAgo = this.formatTimeAgo(latestSession.lastTime || latestSession.modified);
+
+          console.log(`[CC] 自动选择会话: ${this.currentSessionId} (${title})`);
+
+          // 通知用户已自动选择会话
+          await this.sendToFeishu(`✅ 自动使用最近的会话：${title}\n🕒 ${timeAgo}\n\n继续你的对话...`);
+        } else {
+          // 没有任何历史会话，显示帮助信息
+          console.log(`[CC] 没有历史会话，显示帮助信息`);
+          const hintMessage = "💡 还没有会话记录。\n\n" +
+                             "• 发送任意消息开始新对话\n" +
+                             "• 发送 /help 查看所有命令";
+          await this.sendToFeishu(hintMessage);
+          return;
+        }
+      } catch (err) {
+        console.error(`[CC] 获取历史会话失败:`, err);
+        await this.sendToFeishu("❌ 无法加载历史会话，请重试或发送 /new 创建新会话。");
+        return;
+      }
     }
 
     console.log(`[CC] 使用当前会话: ${this.currentSessionId}`);
@@ -355,6 +380,21 @@ export class HttpServer {
               for (const block of assistantEvent.message.content) {
                 if (block.type === "text" && block.text) {
                   replyParts.push(String(block.text));
+                } else if (block.type === "tool_use") {
+                  // 工具调用：立即发送，不混入 replyParts
+                  const name = block.name || "unknown";
+                  let toolCallText = `🔧 **使用工具: ${name}**`;
+                  if (block.input && Object.keys(block.input).length > 0) {
+                    const inputStr = JSON.stringify(block.input, null, 2);
+                    if (inputStr.length > 300) {
+                      toolCallText += `\n\`\`\`\n${inputStr.substring(0, 300)}...\n\`\`\``;
+                    } else {
+                      toolCallText += `\n\`\`\`\n${inputStr}\n\`\`\``;
+                    }
+                  }
+                  // 立即发送工具调用信息
+                  console.log(`[CC] 发送工具调用: ${name}`);
+                  await this.sendToFeishu(toolCallText);
                 }
               }
             }
@@ -371,6 +411,11 @@ export class HttpServer {
     } catch (err) {
       console.error(`[CC] 处理飞书消息错误:`, err);
       await this.sendToFeishu("❌ 处理消息时出错，请重试。");
+    } finally {
+      // 任务完成后删除"正在输入"表态
+      if (this.feishuChannel) {
+        await this.feishuChannel.clearTypingIndicator();
+      }
     }
   }
 

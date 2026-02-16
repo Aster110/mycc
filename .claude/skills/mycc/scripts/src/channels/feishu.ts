@@ -62,6 +62,10 @@ export class FeishuChannel implements MessageChannel {
   private eventDispatcher: Lark.EventDispatcher | null = null;
   private messageCallback: ((message: string, messageId?: string) => void) | null = null;
 
+  // 表态相关（"正在输入" emoji）
+  private currentMessageId: string | null = null;
+  private currentReactionId: string | null = null;
+
   constructor(config?: FeishuChannelConfig) {
     // 从环境变量读取配置
     this.config = config || {
@@ -82,9 +86,12 @@ export class FeishuChannel implements MessageChannel {
    * v2: assistant (包含消息内容), system
    */
   filter(event: SSEEvent): boolean {
+    const eventType = event.type as string;
+    // 调试：记录所有事件类型（包括被过滤的）
+    console.log(`[FeishuChannel] [FILTER] 收到事件类型: ${eventType}`);
+
     const textOnlyTypes = ["text", "content_block_delta", "system", "assistant"];
     const allTypes = ["text", "content_block_delta", "system", "assistant", "tool_use"];
-    const eventType = event.type as string;
 
     // 根据配置决定是否显示工具调用
     if (this.config.showToolUse) {
@@ -99,6 +106,11 @@ export class FeishuChannel implements MessageChannel {
    * @param event - SSE 事件
    */
   async send(event: SSEEvent): Promise<void> {
+    // 调试：记录所有事件类型
+    if (event.type) {
+      console.log(`[FeishuChannel] [DEBUG] 收到事件: ${event.type}${event.type === "assistant" ? " (检查 tool_use)" : ""}`);
+    }
+
     // 如果没有配置飞书凭证，静默跳过
     if (!this.config.appId || !this.config.appSecret) {
       return;
@@ -137,6 +149,8 @@ export class FeishuChannel implements MessageChannel {
     // 处理 v2 SDK 的 assistant 事件（包含消息内容）
     if (event.type === "assistant") {
       const assistantEvent = event as Record<string, unknown>;
+      console.log(`[FeishuChannel] [DEBUG] assistant 事件完整结构:`, JSON.stringify(assistantEvent).substring(0, 500));
+
       // 提取消息内容
       let content = "";
       let toolCalls: string[] = [];
@@ -144,14 +158,18 @@ export class FeishuChannel implements MessageChannel {
       if ("message" in assistantEvent && typeof assistantEvent.message === "object") {
         const message = assistantEvent.message as Record<string, unknown>;
         if ("content" in message && Array.isArray(message.content)) {
+          console.log(`[FeishuChannel] [DEBUG] assistant.content 有 ${message.content.length} 个 block`);
           // content 是一个数组，包含多个 block
           for (const block of message.content) {
             if (typeof block === "object" && block !== null) {
+              const blockType = (block as any).type;
+              console.log(`[FeishuChannel] [DEBUG] block type: ${blockType}`, JSON.stringify(block).substring(0, 200));
               if ("type" in block && block.type === "text" && "text" in block) {
                 // 纯文本内容
                 content += String(block.text);
               } else if ("type" in block && block.type === "tool_use" && this.config.showToolUse) {
                 // 工具调用，格式化显示
+                console.log(`[FeishuChannel] [DEBUG] 找到 tool_use block，showToolUse=${this.config.showToolUse}`);
                 const toolCall = this.formatToolUseBlock(block as Record<string, unknown>);
                 if (toolCall) {
                   toolCalls.push(toolCall);
@@ -159,7 +177,11 @@ export class FeishuChannel implements MessageChannel {
               }
             }
           }
+        } else {
+          console.log(`[FeishuChannel] [DEBUG] assistant.message 没有 content 数组，有字段:`, Object.keys(message));
         }
+      } else {
+        console.log(`[FeishuChannel] [DEBUG] assistant 事件没有 message 字段，有字段:`, Object.keys(assistantEvent));
       }
 
       const sessionId = this.extractSessionId(event);
@@ -170,8 +192,11 @@ export class FeishuChannel implements MessageChannel {
       }
 
       // 再发送工具调用（每条单独发送）
+      console.log(`[FeishuChannel] [DEBUG] 准备发送 ${toolCalls.length} 个工具调用`);
       for (const toolCall of toolCalls) {
+        console.log(`[FeishuChannel] [DEBUG] 发送工具调用内容: ${toolCall.substring(0, 100)}...`);
         await this.sendMessageToFeishu(toolCall, sessionId);
+        console.log(`[FeishuChannel] [DEBUG] 工具调用发送完成`);
       }
 
       return;
@@ -640,14 +665,15 @@ export class FeishuChannel implements MessageChannel {
   /**
    * 添加"正在输入"表态（敲键盘 emoji）
    * 参照 C:\Users\wannago\.openclaw\extensions\feishu\src\typing.ts
+   * @returns reactionId - 表态 ID，用于后续删除
    */
-  private async addTypingIndicator(messageId: string): Promise<void> {
+  private async addTypingIndicator(messageId: string): Promise<string | null> {
     try {
       // 获取访问令牌
       if (!this.accessToken || Date.now() > this.tokenExpireTime) {
         this.accessToken = await this.getAccessToken();
         if (!this.accessToken) {
-          return;
+          return null;
         }
       }
 
@@ -667,13 +693,19 @@ export class FeishuChannel implements MessageChannel {
       });
 
       const result = await response.json();
-      if (result.code === 0) {
-        console.log(`[FeishuChannel] ✓ 已添加正在输入表态`);
+      if (result.code === 0 && result.data?.reaction_id) {
+        // 保存 messageId 和 reactionId
+        this.currentMessageId = messageId;
+        this.currentReactionId = result.data.reaction_id;
+        console.log(`[FeishuChannel] ✓ 已添加正在输入表态 (${this.currentReactionId})`);
+        return this.currentReactionId;
       }
       // 静默失败 - 表态不是关键功能
+      return null;
     } catch (error) {
       // 静默失败 - 表态不是关键功能
       console.log(`[FeishuChannel] 添加表态失败（非关键）: ${error}`);
+      return null;
     }
   }
 
@@ -697,6 +729,18 @@ export class FeishuChannel implements MessageChannel {
       });
     } catch (error) {
       // 静默失败 - 清理不是关键功能
+    }
+  }
+
+  /**
+   * 移除当前的"正在输入"表态（公共方法）
+   */
+  async clearTypingIndicator(): Promise<void> {
+    if (this.currentMessageId && this.currentReactionId) {
+      await this.removeTypingIndicator(this.currentMessageId, this.currentReactionId);
+      this.currentMessageId = null;
+      this.currentReactionId = null;
+      console.log("[FeishuChannel] ✓ 已移除正在输入表态");
     }
   }
 }
