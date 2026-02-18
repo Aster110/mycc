@@ -360,9 +360,7 @@ export class HttpServer {
     console.log(`[CC] 使用当前会话: ${this.currentSessionId}`);
 
     try {
-      // 使用 adapter 处理消息
-      const replyParts: string[] = [];
-
+      // 使用 adapter 处理消息（流式发送，不累积）
       for await (const data of adapter.chat({
         message: trimmedMessage,
         sessionId: this.currentSessionId,
@@ -375,16 +373,24 @@ export class HttpServer {
             this.currentSessionId = data.session_id as string;
             console.log(`[CC] 会话已更新: ${this.currentSessionId}`);
           }
+          // v1 SDK: text 事件 - 立即发送文本
           if (data.type === "text" && data.text) {
-            replyParts.push(String(data.text));
-          } else if (data.type === "assistant") {
+            const text = String(data.text);
+            console.log(`[CC] 发送文本: ${text.substring(0, 30)}...`);
+            await this.sendToFeishu(text);
+          }
+          // v2 SDK: assistant 事件 - 按 content 数组顺序逐条发送
+          else if (data.type === "assistant") {
             const assistantEvent = data as any;
             if (assistantEvent.message?.content) {
               for (const block of assistantEvent.message.content) {
                 if (block.type === "text" && block.text) {
-                  replyParts.push(String(block.text));
+                  // 立即发送文本
+                  const text = String(block.text);
+                  console.log(`[CC] 发送文本: ${text.substring(0, 30)}...`);
+                  await this.sendToFeishu(text);
                 } else if (block.type === "tool_use") {
-                  // 工具调用：立即发送，不混入 replyParts
+                  // 立即发送工具调用
                   const name = block.name || "unknown";
                   let toolCallText = `🔧 **使用工具: ${name}**`;
                   if (block.input && Object.keys(block.input).length > 0) {
@@ -395,7 +401,6 @@ export class HttpServer {
                       toolCallText += `\n\`\`\`\n${inputStr}\n\`\`\``;
                     }
                   }
-                  // 立即发送工具调用信息
                   console.log(`[CC] 发送工具调用: ${name}`);
                   await this.sendToFeishu(toolCallText);
                 }
@@ -403,13 +408,6 @@ export class HttpServer {
             }
           }
         }
-      }
-
-      // 发送回复到飞书
-      if (replyParts.length > 0) {
-        const reply = replyParts.join("").trim();
-        console.log(`[CC] 飞书回复: ${reply.substring(0, 50)}...`);
-        await this.sendToFeishu(reply);
       }
     } catch (err) {
       console.error(`[CC] 处理飞书消息错误:`, err);
@@ -480,6 +478,8 @@ export class HttpServer {
 
     try {
       const replyParts: string[] = [];
+      let newSessionId: string | undefined;
+      let sessionTitle: string | undefined;
 
       // 不传递 sessionId，让 adapter 创建新会话
       for await (const data of adapter.chat({
@@ -489,6 +489,7 @@ export class HttpServer {
         if (data && typeof data === "object") {
           if (data.type === "system" && "session_id" in data) {
             this.currentSessionId = data.session_id as string;
+            newSessionId = data.session_id as string;
             console.log(`[CC] 新会话已创建: ${this.currentSessionId}`);
           }
           if (data.type === "text" && data.text) {
@@ -506,9 +507,25 @@ export class HttpServer {
         }
       }
 
-      if (replyParts.length > 0) {
-        await this.sendToFeishu(replyParts.join("").trim());
+      // 构建会话信息响应
+      let response = "";
+      if (newSessionId) {
+        response = `✅ 新会话已创建\n\n`;
+        response += `📌 会话 ID: ${newSessionId}\n`;
+        if (title) {
+          response += `📝 标题: ${title}\n`;
+          sessionTitle = title;
+        }
+        response += `\n`;
       }
+
+      if (replyParts.length > 0) {
+        response += replyParts.join("").trim();
+      } else if (newSessionId) {
+        response += `💡 现在发送的消息将使用此会话。`;
+      }
+
+      await this.sendToFeishu(response);
     } catch (err) {
       console.error(`[CC] 创建会话错误:`, err);
       await this.sendToFeishu("❌ 创建会话失败，请重试。");

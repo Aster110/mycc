@@ -50,7 +50,7 @@
 
 ### 查看服务状态
 ```batch
-netstat -ano | findstr :8080
+netstat -ano | findstr :18080
 ```
 
 ### 查看实时日志
@@ -60,7 +60,7 @@ type E:\AI\mycc\AImycc\.claude\skills\mycc\backend.log
 
 ### 手动停止服务
 ```batch
-netstat -ano | findstr :8080
+netstat -ano | findstr :18080
 taskkill /PID <PID> /F
 ```
 
@@ -82,7 +82,7 @@ E:\AI\mycc\AImycc\.claude\skills\mycc\current.json
 ### 端口被占用
 ```batch
 # 查找占用进程
-netstat -ano | findstr :8080
+netstat -ano | findstr :18080
 
 # 停止进程
 taskkill /PID <PID> /F

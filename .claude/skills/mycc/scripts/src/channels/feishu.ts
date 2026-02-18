@@ -152,8 +152,8 @@ export class FeishuChannel implements MessageChannel {
       console.log(`[FeishuChannel] [DEBUG] assistant 事件完整结构:`, JSON.stringify(assistantEvent).substring(0, 500));
 
       // 提取消息内容
-      let content = "";
-      let toolCalls: string[] = [];
+      const textParts: string[] = [];
+      const toolCalls: string[] = [];
 
       if ("message" in assistantEvent && typeof assistantEvent.message === "object") {
         const message = assistantEvent.message as Record<string, unknown>;
@@ -165,8 +165,8 @@ export class FeishuChannel implements MessageChannel {
               const blockType = (block as any).type;
               console.log(`[FeishuChannel] [DEBUG] block type: ${blockType}`, JSON.stringify(block).substring(0, 200));
               if ("type" in block && block.type === "text" && "text" in block) {
-                // 纯文本内容
-                content += String(block.text);
+                // 纯文本内容 - 逐条保存
+                textParts.push(String(block.text));
               } else if ("type" in block && block.type === "tool_use" && this.config.showToolUse) {
                 // 工具调用，格式化显示
                 console.log(`[FeishuChannel] [DEBUG] 找到 tool_use block，showToolUse=${this.config.showToolUse}`);
@@ -186,17 +186,29 @@ export class FeishuChannel implements MessageChannel {
 
       const sessionId = this.extractSessionId(event);
 
-      // 先发送文本内容
-      if (content) {
-        await this.sendMessageToFeishu(content, sessionId);
-      }
+      // 按原始顺序交替发送文本和工具调用
+      // 由于 content 数组中的元素已经是按顺序排列的，我们需要重建原始顺序
+      if ("message" in assistantEvent && typeof assistantEvent.message === "object") {
+        const message = assistantEvent.message as Record<string, unknown>;
+        if ("content" in message && Array.isArray(message.content)) {
+          let textIndex = 0;
+          let toolIndex = 0;
 
-      // 再发送工具调用（每条单独发送）
-      console.log(`[FeishuChannel] [DEBUG] 准备发送 ${toolCalls.length} 个工具调用`);
-      for (const toolCall of toolCalls) {
-        console.log(`[FeishuChannel] [DEBUG] 发送工具调用内容: ${toolCall.substring(0, 100)}...`);
-        await this.sendMessageToFeishu(toolCall, sessionId);
-        console.log(`[FeishuChannel] [DEBUG] 工具调用发送完成`);
+          for (const block of message.content) {
+            if (typeof block === "object" && block !== null) {
+              if ("type" in block && block.type === "text" && "text" in block && textIndex < textParts.length) {
+                // 发送文本
+                await this.sendMessageToFeishu(textParts[textIndex], sessionId);
+                textIndex++;
+              } else if ("type" in block && block.type === "tool_use" && this.config.showToolUse && toolIndex < toolCalls.length) {
+                // 发送工具调用
+                console.log(`[FeishuChannel] [DEBUG] 发送工具调用: ${toolCalls[toolIndex].substring(0, 50)}...`);
+                await this.sendMessageToFeishu(toolCalls[toolIndex], sessionId);
+                toolIndex++;
+              }
+            }
+          }
+        }
       }
 
       return;
@@ -649,18 +661,75 @@ export class FeishuChannel implements MessageChannel {
         }
       }
 
-      // 发送文本消息（post + Markdown，表格转文本列表）
       const receiveIdType = this.config.receiveIdType || "open_id";
 
-      // 转换 Markdown 表格为更易读的文本格式
-      const formattedText = this.convertMarkdownTables(text);
+      // 检查文本中是否包含表格
+      const tableData = this.parseMarkdownTable(text);
+
+      if (tableData) {
+        // 使用交互卡片 + 表格组件
+        const cardContent = this.buildTableCard(tableData.beforeTable, tableData.headers, tableData.rows, tableData.afterTable);
+        return await this.sendInteractiveCard(userId, cardContent);
+      }
+
+      // 没有表格，使用普通 Markdown 消息
+      return await this.sendMarkdownMessage(userId, text);
+    } catch (error) {
+      console.error("[FeishuChannel] ✗ Send error:", error);
+      return false;
+    }
+  }
+
+  /**
+   * 发送交互卡片消息
+   */
+  private async sendInteractiveCard(userId: string, card: any): Promise<boolean> {
+    try {
+      const receiveIdType = this.config.receiveIdType || "open_id";
+
+      const responseBody = {
+        receive_id: userId,
+        msg_type: "interactive",
+        content: JSON.stringify(card)
+      };
+
+      const response = await fetch(`https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=${receiveIdType}`, {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${this.accessToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(responseBody),
+      });
+
+      const result = await response.json();
+      if (result.code === 0) {
+        console.log(`[FeishuChannel] ✓ Sent interactive card`);
+        await sleep(1000);
+        return true;
+      } else {
+        console.error("[FeishuChannel] ✗ Send failed:", result.msg);
+        return false;
+      }
+    } catch (error) {
+      console.error("[FeishuChannel] ✗ Send interactive card error:", error);
+      return false;
+    }
+  }
+
+  /**
+   * 发送 Markdown 消息
+   */
+  private async sendMarkdownMessage(userId: string, text: string): Promise<boolean> {
+    try {
+      const receiveIdType = this.config.receiveIdType || "open_id";
 
       const responseBody = {
         receive_id: userId,
         msg_type: "post",
         content: JSON.stringify({
           zh_cn: {
-            content: [[{ tag: "md", text: formattedText }]]
+            content: [[{ tag: "md", text }]]
           }
         })
       };
@@ -677,7 +746,6 @@ export class FeishuChannel implements MessageChannel {
       const result = await response.json();
       if (result.code === 0) {
         console.log(`[FeishuChannel] ✓ Sent: ${text.substring(0, 30)}${text.length > 30 ? "..." : ""}`);
-        // 等待 1 秒，避免消息合并
         await sleep(1000);
         return true;
       } else {
@@ -835,10 +903,10 @@ export class FeishuChannel implements MessageChannel {
   }
 
   /**
-   * 解析 Markdown 表格为飞书交互卡片格式
-   * @returns 包含 beforeTable、afterTable 和 cardElements 的对象，如果没有表格则返回 null
+   * 解析 Markdown 表格为飞书交互卡片表格格式
+   * @returns 包含 beforeTable、afterTable 和表格数据的对象，如果没有表格则返回 null
    */
-  private parseMarkdownTable(text: string): { beforeTable: string; afterTable: string; cardElements: any[] } | null {
+  private parseMarkdownTable(text: string): { beforeTable: string; afterTable: string; headers: string[]; rows: string[][] } | null {
     // 检测表格：查找包含 | 的连续行，至少 2 行（表头 + 分隔线）
     const lines = text.split("\n");
     let tableStart = -1;
@@ -883,52 +951,72 @@ export class FeishuChannel implements MessageChannel {
     const headers = this.parseTableRow(tableLines[0]);
     const rows = tableLines.slice(2).map(line => this.parseTableRow(line));
 
-    // 构建飞书交互卡片元素
-    const cardElements: any[] = [];
+    return { beforeTable, afterTable, headers, rows };
+  }
 
-    // 表头行
-    const headerCells: any[] = headers.map(cell => ({
-      tag: "div",
-      text: {
-        tag: "plain_text",
-        content: cell
-      },
-      style: "bold"
-    }));
+  /**
+   * 构建飞书交互卡片（带表格）
+   */
+  private buildTableCard(beforeTable: string, headers: string[], rows: string[][], afterTable: string): any {
+    const elements: any[] = [];
 
-    cardElements.push({
-      tag: "div",
-      text: {
-        tag: "lark_md",
-        content: "**" + headers.join("** | **") + "**"
-      }
-    });
-
-    // 添加分隔线
-    cardElements.push({
-      tag: "hr"
-    });
-
-    // 数据行
-    for (const row of rows) {
-      const rowCells = row.map(cell => ({
-        tag: "div",
-        text: {
-          tag: "plain_text",
-          content: cell
-        }
-      }));
-
-      cardElements.push({
+    // 表格前的内容（如果有）
+    if (beforeTable) {
+      elements.push({
         tag: "div",
         text: {
           tag: "lark_md",
-          content: row.join(" | ")
+          content: beforeTable
         }
       });
     }
 
-    return { beforeTable, afterTable, cardElements };
+    // 飞书表格列定义（使用官方格式）
+    // 为每列生成唯一的 name（英文字母键名）
+    const columnKeys = headers.map((_, i) => `col_${i}`);
+    const tableColumns = headers.map((h, i) => ({
+      name: columnKeys[i],
+      display_name: h,
+      data_type: "text",
+      width: "120px"
+    }));
+
+    // 构建行数据（每行是一个对象，键名必须匹配列的 name）
+    const tableRows = rows.map(row => {
+      const rowObj: any = {};
+      row.forEach((cell, i) => {
+        rowObj[columnKeys[i]] = cell;
+      });
+      return rowObj;
+    });
+
+    // 添加表格元素（使用飞书官方格式）
+    elements.push({
+      tag: "table",
+      columns: tableColumns,
+      rows: tableRows,
+      page_size: 10,
+      row_height: "low"
+    });
+
+    // 表格后的内容（如果有）
+    if (afterTable) {
+      elements.push({
+        tag: "div",
+        text: {
+          tag: "lark_md",
+          content: afterTable
+        }
+      });
+    }
+
+    // 返回完整的交互卡片（不包含 header，可能表格元素不支持）
+    return {
+      config: {
+        wide_screen_mode: true
+      },
+      elements
+    };
   }
 
   /**

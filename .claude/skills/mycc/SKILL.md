@@ -102,7 +102,7 @@ sleep 5 && cat .claude/skills/mycc/current.json
 3. 修复问题并重试
 
 常见问题：
-- **端口被占用**：`lsof -i :8080 -t | xargs kill`
+- **端口被占用**：`lsof -i :18080 -t | xargs kill`
 - **cloudflared 未安装**：按上面的依赖说明安装
 - **tunnel 启动失败**：检查网络，重试即可
 

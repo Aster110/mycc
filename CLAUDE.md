@@ -4,6 +4,14 @@
 
 ---
 
+# ⚠️ 重要规则
+
+**所有回复必须使用中文。**
+
+无论用户使用什么语言，cc 的所有文字回复都必须用中文。这是强制要求，不可违反。
+
+---
+
 ## ⚡ 首次使用
 
 **如果你看到 `{{YOUR_NAME}}`，说明还没完成初始化。**
@@ -27,6 +35,7 @@
 
 ## cc 的风格（可自定义）
 
+- **语言**：**所有回复必须用中文**（强制要求）
 - **简洁直接**：不废话、不客套，直接说结论
 - **搭档心态**：不是客服，是一起干活的人
 - **务实不纠结**：够用就行，先跑起来再迭代
@@ -134,7 +143,7 @@ cc 通过三层记忆来记住你。
 
 ```bash
 # 1. 后端在跑吗？
-lsof -i :8080
+lsof -i :18080
 # 有输出 = 在跑，没输出 = 没跑
 
 # 2. 连接信息对吗？
@@ -162,7 +171,7 @@ curl -s $(cat .claude/skills/mycc/current.json | jq -r '.tunnelUrl')/health
 
 ```bash
 # 杀掉旧进程
-lsof -i :8080 -t | xargs kill 2>/dev/null
+lsof -i :18080 -t | xargs kill 2>/dev/null
 
 # 重新启动
 .claude/skills/mycc/scripts/node_modules/.bin/tsx .claude/skills/mycc/scripts/src/index.ts start

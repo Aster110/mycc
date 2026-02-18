@@ -56,7 +56,7 @@ Claude Code (执行任务)
 
 daemon.sh 里的两个变量：
 ```bash
-WEBUI_URL="http://localhost:8080"  # cc-webui 地址
+WEBUI_URL="http://localhost:18080"  # cc-webui 地址
 PROJECT_DIR="/path/to/project"     # 项目根目录
 ```
 
