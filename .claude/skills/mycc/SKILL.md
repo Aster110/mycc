@@ -13,15 +13,38 @@ description: 启动 mycc 小程序后端服务（后台运行）。触发词："
 |------|------|
 | Claude Code | **必须是官方原版**，fork 版本可能不兼容 |
 | 网络 | **需要 VPN/代理**（cloudflared 需要访问外网） |
-| 系统 | ✅ macOS、✅ Linux、❌ Windows、⚠️ WSL（不稳定） |
+| 系统 | ✅ macOS、✅ Linux、✅ Windows (原生)、⚠️ WSL（不稳定） |
 
-> ⚠️ **Windows/WSL 用户注意**：目前 Windows 原生和 WSL 环境都存在兼容性问题，建议使用 macOS 或 Linux。
->
 > 💡 **关于第三方 Claude Code**：目前仅测试了官方原版，第三方 fork 版本的兼容性支持在规划中。
 
 ## 依赖
 
-- **cloudflared**：`brew install cloudflare/cloudflare/cloudflared`（macOS）或参考 [官方文档](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/)
+- **Node.js 18+**：运行后端服务
+- **cloudflared**：
+  - macOS: `brew install cloudflare/cloudflare/cloudflared`
+  - Linux: 参考 [官方文档](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/)
+  - Windows: `winget install Cloudflare.cloudflared` 或从官网下载
+
+## 启动方式
+
+### 方式 1：使用 `/mycc` 命令（推荐）
+
+直接在 Claude Code 中输入：
+- `/mycc`
+- `启动 mycc`
+- `启动小程序后端`
+
+### 方式 2：使用启动脚本
+
+| 系统 | 启动命令 | 停止命令 |
+|------|----------|----------|
+| Windows | `.\start-mycc.ps1` | `.\stop-mycc.ps1` |
+| macOS/Linux | `./start-mycc.sh` | `./stop-mycc.sh` |
+
+> ⚠️ **首次运行**：先安装依赖
+> ```bash
+> cd .claude/skills/mycc/scripts && npm install && cd -
+> ```
 
 ## 触发词
 
@@ -66,7 +89,10 @@ sleep 5 && cat .claude/skills/mycc/current.json
 - **后台运行**：后端会在后台持续运行，不阻塞当前会话
 - **自动检测 cwd**：会向上查找项目根目录，确保 hooks 能正确加载
 - **连接信息**：保存在 `.claude/skills/mycc/current.json`
-- **停止服务**：`lsof -i :8080 -t | xargs kill`
+- **停止服务**：
+  - Windows: `.\stop-mycc.ps1`
+  - macOS/Linux: `./stop-mycc.sh`
+  - 或手动：`lsof -i :18080 -t | xargs kill` (Unix) / `taskkill /PID <pid> /F` (Windows)
 
 ## 遇到问题？
 

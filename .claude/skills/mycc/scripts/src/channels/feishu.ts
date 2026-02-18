@@ -28,6 +28,8 @@ export interface FeishuChannelConfig {
   encryptKey?: string;
   /** Verification Token（用于验证事件推送） */
   verificationToken?: string;
+  /** 是否显示工具调用：true（显示）或 false（不显示），默认 true */
+  showToolUse?: boolean;
 }
 
 /**
@@ -58,7 +60,11 @@ export class FeishuChannel implements MessageChannel {
   // WebSocket 相关
   private wsClient: Lark.WSClient | null = null;
   private eventDispatcher: Lark.EventDispatcher | null = null;
-  private messageCallback: ((message: string, messageId?: string) => void) | null = null;
+  private messageCallback: ((message: string, images?: Array<{ data: string; mediaType: string }>, messageId?: string) => void) | null = null;
+
+  // 表态相关（"正在输入" emoji）
+  private currentMessageId: string | null = null;
+  private currentReactionId: string | null = null;
 
   constructor(config?: FeishuChannelConfig) {
     // 从环境变量读取配置
@@ -70,19 +76,29 @@ export class FeishuChannel implements MessageChannel {
       connectionMode: (process.env.FEISHU_CONNECTION_MODE as "websocket" | "poll") || "poll",
       encryptKey: process.env.FEISHU_ENCRYPT_KEY,
       verificationToken: process.env.FEISHU_VERIFICATION_TOKEN,
+      showToolUse: process.env.FEISHU_SHOW_TOOL_USE === "false" ? false : true, // 默认 true
     };
   }
 
   /**
    * 消息过滤器 - 支持 v1 和 v2 SDK 的事件类型
-   * v1: text, content_block_delta, system
+   * v1: text, content_block_delta, system, tool_use
    * v2: assistant (包含消息内容), system
    */
   filter(event: SSEEvent): boolean {
-    const textOnlyTypes = ["text", "content_block_delta", "system", "assistant"];
     const eventType = event.type as string;
+    // 调试：记录所有事件类型（包括被过滤的）
+    console.log(`[FeishuChannel] [FILTER] 收到事件类型: ${eventType}`);
 
-    return textOnlyTypes.includes(eventType);
+    const textOnlyTypes = ["text", "content_block_delta", "system", "assistant"];
+    const allTypes = ["text", "content_block_delta", "system", "assistant", "tool_use"];
+
+    // 根据配置决定是否显示工具调用
+    if (this.config.showToolUse) {
+      return allTypes.includes(eventType);
+    } else {
+      return textOnlyTypes.includes(eventType);
+    }
   }
 
   /**
@@ -90,6 +106,11 @@ export class FeishuChannel implements MessageChannel {
    * @param event - SSE 事件
    */
   async send(event: SSEEvent): Promise<void> {
+    // 调试：记录所有事件类型
+    if (event.type) {
+      console.log(`[FeishuChannel] [DEBUG] 收到事件: ${event.type}${event.type === "assistant" ? " (检查 tool_use)" : ""}`);
+    }
+
     // 如果没有配置飞书凭证，静默跳过
     if (!this.config.appId || !this.config.appSecret) {
       return;
@@ -111,31 +132,73 @@ export class FeishuChannel implements MessageChannel {
       return;
     }
 
+    // 处理 tool_use 事件（工具调用）
+    if (event.type === "tool_use") {
+      if (!this.config.showToolUse) {
+        return;
+      }
+      const toolEvent = event as Record<string, unknown>;
+      const toolContent = this.formatToolUse(toolEvent);
+      if (toolContent) {
+        const sessionId = this.extractSessionId(event);
+        await this.sendMessageToFeishu(toolContent, sessionId);
+      }
+      return;
+    }
+
     // 处理 v2 SDK 的 assistant 事件（包含消息内容）
     if (event.type === "assistant") {
       const assistantEvent = event as Record<string, unknown>;
+      console.log(`[FeishuChannel] [DEBUG] assistant 事件完整结构:`, JSON.stringify(assistantEvent).substring(0, 500));
+
       // 提取消息内容
       let content = "";
+      let toolCalls: string[] = [];
+
       if ("message" in assistantEvent && typeof assistantEvent.message === "object") {
         const message = assistantEvent.message as Record<string, unknown>;
         if ("content" in message && Array.isArray(message.content)) {
+          console.log(`[FeishuChannel] [DEBUG] assistant.content 有 ${message.content.length} 个 block`);
           // content 是一个数组，包含多个 block
           for (const block of message.content) {
             if (typeof block === "object" && block !== null) {
+              const blockType = (block as any).type;
+              console.log(`[FeishuChannel] [DEBUG] block type: ${blockType}`, JSON.stringify(block).substring(0, 200));
               if ("type" in block && block.type === "text" && "text" in block) {
-                // 只发送纯文本内容，过滤掉工具调用
+                // 纯文本内容
                 content += String(block.text);
+              } else if ("type" in block && block.type === "tool_use" && this.config.showToolUse) {
+                // 工具调用，格式化显示
+                console.log(`[FeishuChannel] [DEBUG] 找到 tool_use block，showToolUse=${this.config.showToolUse}`);
+                const toolCall = this.formatToolUseBlock(block as Record<string, unknown>);
+                if (toolCall) {
+                  toolCalls.push(toolCall);
+                }
               }
-              // 工具调用 (tool_use) 被过滤掉，不发送到飞书
             }
           }
+        } else {
+          console.log(`[FeishuChannel] [DEBUG] assistant.message 没有 content 数组，有字段:`, Object.keys(message));
         }
+      } else {
+        console.log(`[FeishuChannel] [DEBUG] assistant 事件没有 message 字段，有字段:`, Object.keys(assistantEvent));
       }
 
+      const sessionId = this.extractSessionId(event);
+
+      // 先发送文本内容
       if (content) {
-        const sessionId = this.extractSessionId(event);
         await this.sendMessageToFeishu(content, sessionId);
       }
+
+      // 再发送工具调用（每条单独发送）
+      console.log(`[FeishuChannel] [DEBUG] 准备发送 ${toolCalls.length} 个工具调用`);
+      for (const toolCall of toolCalls) {
+        console.log(`[FeishuChannel] [DEBUG] 发送工具调用内容: ${toolCall.substring(0, 100)}...`);
+        await this.sendMessageToFeishu(toolCall, sessionId);
+        console.log(`[FeishuChannel] [DEBUG] 工具调用发送完成`);
+      }
+
       return;
     }
 
@@ -155,7 +218,7 @@ export class FeishuChannel implements MessageChannel {
    * 设置消息接收回调
    * @param callback - 收到飞书消息时的回调函数
    */
-  onMessage(callback: (message: string) => void): void {
+  onMessage(callback: (message: string, images?: Array<{ data: string; mediaType: string }>, messageId?: string) => void): void {
     this.messageCallback = callback;
   }
 
@@ -221,13 +284,17 @@ export class FeishuChannel implements MessageChannel {
               });
             }
 
-            const content = this.parseFeishuMessage(event);
-            if (content && this.messageCallback) {
-              console.log(`[FeishuChannel] ✓ 收到消息: ${content.substring(0, 50)}...`);
-              // 传递消息 ID，以便后续可以删除表态
-              this.messageCallback(content, messageId);
-            } else if (!content) {
-              console.log("[FeishuChannel] [DEBUG] 解析消息内容为空");
+            // await 解析结果（图片下载是异步的）
+            const parsed = await this.parseFeishuMessage(event, messageId);
+            if (parsed && this.messageCallback) {
+              const { text, images } = parsed;
+              if (text || images) {
+                console.log(`[FeishuChannel] ✓ 收到消息: ${text ? text.substring(0, 50) : "[图片]"}...`);
+                // 传递消息 ID，以便后续可以删除表态
+                this.messageCallback(text, images, messageId);
+              } else {
+                console.log("[FeishuChannel] [DEBUG] 解析消息内容为空");
+              }
             }
           } catch (err) {
             console.error("[FeishuChannel] 消息处理错误:", err);
@@ -275,12 +342,12 @@ export class FeishuChannel implements MessageChannel {
   }
 
   /**
-   * 解析飞书消息
+   * 解析飞书消息（异步，支持图片下载）
    */
-  private parseFeishuMessage(event: any): string | null {
+  private parseFeishuMessage(event: any, messageId?: string): Promise<{ text: string; images?: Array<{ data: string; mediaType: string }> } | null> {
     try {
       // 事件结构: event.sender + event.message（不是 event.event.message）
-      if (!event?.message) return null;
+      if (!event?.message) return Promise.resolve(null);
 
       const message = event.message;
       const messageType = message.message_type;
@@ -290,18 +357,36 @@ export class FeishuChannel implements MessageChannel {
         // 文本消息 - content 是 JSON 字符串
         if (typeof content === "string") {
           const parsed = JSON.parse(content);
-          return parsed.text || "";
+          return Promise.resolve({ text: parsed.text || "" });
         }
         // 兜底：content 可能已经是对象
-        return content?.text || "";
+        return Promise.resolve({ text: content?.text || "" });
+      }
+
+      if (messageType === "image") {
+        // 图片消息 - content 是 JSON 字符串
+        console.log(`[FeishuChannel] 收到图片消息`);
+        if (typeof content === "string") {
+          const parsed = JSON.parse(content);
+          const imageKey = parsed.image_key;
+          if (imageKey) {
+            // 需要通过飞书 API 获取图片数据
+            return this.downloadImageFromFeishu(imageKey, messageId).then(data => ({
+              text: "",
+              images: data ? [{ data, mediaType: "image/png" }] : undefined
+            }));
+          }
+        }
+        console.log(`[FeishuChannel] 图片消息没有 image_key`);
+        return Promise.resolve({ text: "" });
       }
 
       // 其他类型消息暂不支持
       console.log(`[FeishuChannel] 暂不支持的消息类型: ${messageType}`);
-      return null;
+      return Promise.resolve(null);
     } catch (err) {
       console.error("[FeishuChannel] 解析消息失败:", err);
-      return null;
+      return Promise.resolve(null);
     }
   }
 
@@ -315,7 +400,7 @@ export class FeishuChannel implements MessageChannel {
     // 停止 WebSocket
     if (this.wsClient) {
       try {
-        this.wsClient.stop();
+        this.wsClient.close();
         console.log("[FeishuChannel] WebSocket 已停止");
       } catch {
         // 静默处理
@@ -350,6 +435,57 @@ export class FeishuChannel implements MessageChannel {
       return String(event.session_id);
     }
     return undefined;
+  }
+
+  /**
+   * 格式化 tool_use 事件为可读文本
+   */
+  private formatToolUse(event: Record<string, unknown>): string {
+    try {
+      const name = event.name as string || "unknown";
+      const input = event.input as Record<string, unknown> || {};
+
+      let output = `🔧 使用工具: **${name}**\n`;
+
+      // 格式化输入参数
+      if (Object.keys(input).length > 0) {
+        output += "```\n";
+        output += JSON.stringify(input, null, 2);
+        output += "\n```\n";
+      }
+
+      return output;
+    } catch (err) {
+      console.error("[FeishuChannel] 格式化工具调用失败:", err);
+      return "🔧 使用工具（详情解析失败）";
+    }
+  }
+
+  /**
+   * 格式化 assistant 事件中的 tool_use block
+   */
+  private formatToolUseBlock(block: Record<string, unknown>): string | null {
+    try {
+      const name = block.name as string || "unknown";
+      const input = block.input as Record<string, unknown> || {};
+
+      let output = `🔧 **${name}**`;
+
+      // 如果有输入参数，简要显示
+      if (Object.keys(input).length > 0) {
+        const inputStr = JSON.stringify(input);
+        if (inputStr.length > 100) {
+          output += ` ${inputStr.substring(0, 100)}...`;
+        } else {
+          output += ` ${inputStr}`;
+        }
+      }
+
+      return output;
+    } catch (err) {
+      console.error("[FeishuChannel] 格式化工具调用失败:", err);
+      return "🔧 工具调用（详情解析失败）";
+    }
   }
 
   /**
@@ -416,6 +552,79 @@ export class FeishuChannel implements MessageChannel {
   }
 
   /**
+   * 从飞书下载图片（通过 message_id 获取 base64 数据）
+   *
+   * 对于用户发送的图片：
+   * 使用 messageResource API，直接将 image_key 作为 file_key 使用
+   *
+   * 参考 openclaw 实现：
+   * "For message media, always use messageResource API
+   *  The image.get API is only for images uploaded via im/v1/images, not for message attachments"
+   */
+  private async downloadImageFromFeishu(imageKey: string, messageId?: string): Promise<string | null> {
+    try {
+      // 获取访问令牌（如果需要）
+      if (!this.accessToken || Date.now() > this.tokenExpireTime) {
+        this.accessToken = await this.getAccessToken();
+        if (!this.accessToken) {
+          return null;
+        }
+      }
+
+      // 如果有 messageId，使用 messageResource API 下载
+      // 对于用户发送的图片，image_key 可以直接作为 file_key 使用
+      if (messageId) {
+        console.log(`[FeishuChannel] [DEBUG] Using messageResource API with image_key as file_key`);
+
+        const resourceResponse = await fetch(
+          `https://open.feishu.cn/open-apis/im/v1/messages/${messageId}/resources/${imageKey}?type=image`,
+          {
+            method: "GET",
+            headers: {
+              "Authorization": `Bearer ${this.accessToken}`,
+            },
+          }
+        );
+
+        if (resourceResponse.ok) {
+          const buffer = await resourceResponse.arrayBuffer();
+          const base64 = Buffer.from(buffer).toString("base64");
+          console.log(`[FeishuChannel] ✓ Downloaded image: ${base64.length} bytes (base64)`);
+          return base64;
+        } else {
+          const errorText = await resourceResponse.text();
+          console.error(`[FeishuChannel] ✗ Resource download failed: ${resourceResponse.status}`, errorText.substring(0, 200));
+          return null;
+        }
+      }
+
+      // 没有 messageId 的情况：尝试直接下载
+      // 注意：这只对机器人自己上传的图片有效（通过 im/v1/images 上传）
+      console.log(`[FeishuChannel] [DEBUG] No messageId, trying direct image download (only works for bot-uploaded images)`);
+      const directResponse = await fetch(`https://open.feishu.cn/open-apis/im/v1/images/${imageKey}`, {
+        method: "GET",
+        headers: {
+          "Authorization": `Bearer ${this.accessToken}`,
+        },
+      });
+
+      if (directResponse.ok) {
+        const buffer = await directResponse.arrayBuffer();
+        const base64 = Buffer.from(buffer).toString("base64");
+        console.log(`[FeishuChannel] ✓ Downloaded image via direct API: ${base64.length} bytes (base64)`);
+        return base64;
+      } else {
+        const errorText = await directResponse.text();
+        console.error(`[FeishuChannel] ✗ Direct image download failed: ${directResponse.status}`, errorText.substring(0, 200));
+        return null;
+      }
+    } catch (error) {
+      console.error("[FeishuChannel] ✗ Download error:", error);
+      return null;
+    }
+  }
+
+  /**
    * 发送消息到飞书
    */
   private async sendMessageToFeishu(text: string, sessionId?: string): Promise<boolean> {
@@ -437,26 +646,23 @@ export class FeishuChannel implements MessageChannel {
         if (imageSent) {
           // 图片发送成功后，移除记录
           this.pendingImages.delete(sessionId);
-          // 等待一下，避免消息顺序混乱
-          await sleep(500);
         }
       }
 
-      // 发送文本消息（使用飞书富文本格式，支持 Markdown）
+      // 发送文本消息（post + Markdown，表格转文本列表）
       const receiveIdType = this.config.receiveIdType || "open_id";
 
-      // 构建飞书富文本格式（post 类型），支持 Markdown
-      const postContent = {
-        zh_cn: {
-          content: [
-            [
-              {
-                tag: "md",
-                text: text,
-              },
-            ],
-          ],
-        },
+      // 转换 Markdown 表格为更易读的文本格式
+      const formattedText = this.convertMarkdownTables(text);
+
+      const responseBody = {
+        receive_id: userId,
+        msg_type: "post",
+        content: JSON.stringify({
+          zh_cn: {
+            content: [[{ tag: "md", text: formattedText }]]
+          }
+        })
       };
 
       const response = await fetch(`https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=${receiveIdType}`, {
@@ -465,16 +671,14 @@ export class FeishuChannel implements MessageChannel {
           "Authorization": `Bearer ${this.accessToken}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({
-          receive_id: userId,
-          msg_type: "post",
-          content: JSON.stringify(postContent),
-        }),
+        body: JSON.stringify(responseBody),
       });
 
       const result = await response.json();
       if (result.code === 0) {
         console.log(`[FeishuChannel] ✓ Sent: ${text.substring(0, 30)}${text.length > 30 ? "..." : ""}`);
+        // 等待 1 秒，避免消息合并
+        await sleep(1000);
         return true;
       } else {
         console.error("[FeishuChannel] ✗ Send failed:", result.msg);
@@ -551,14 +755,15 @@ export class FeishuChannel implements MessageChannel {
   /**
    * 添加"正在输入"表态（敲键盘 emoji）
    * 参照 C:\Users\wannago\.openclaw\extensions\feishu\src\typing.ts
+   * @returns reactionId - 表态 ID，用于后续删除
    */
-  private async addTypingIndicator(messageId: string): Promise<void> {
+  private async addTypingIndicator(messageId: string): Promise<string | null> {
     try {
       // 获取访问令牌
       if (!this.accessToken || Date.now() > this.tokenExpireTime) {
         this.accessToken = await this.getAccessToken();
         if (!this.accessToken) {
-          return;
+          return null;
         }
       }
 
@@ -578,13 +783,19 @@ export class FeishuChannel implements MessageChannel {
       });
 
       const result = await response.json();
-      if (result.code === 0) {
-        console.log(`[FeishuChannel] ✓ 已添加正在输入表态`);
+      if (result.code === 0 && result.data?.reaction_id) {
+        // 保存 messageId 和 reactionId
+        this.currentMessageId = messageId;
+        this.currentReactionId = result.data.reaction_id;
+        console.log(`[FeishuChannel] ✓ 已添加正在输入表态 (${this.currentReactionId})`);
+        return this.currentReactionId;
       }
       // 静默失败 - 表态不是关键功能
+      return null;
     } catch (error) {
       // 静默失败 - 表态不是关键功能
       console.log(`[FeishuChannel] 添加表态失败（非关键）: ${error}`);
+      return null;
     }
   }
 
@@ -609,6 +820,179 @@ export class FeishuChannel implements MessageChannel {
     } catch (error) {
       // 静默失败 - 清理不是关键功能
     }
+  }
+
+  /**
+   * 移除当前的"正在输入"表态（公共方法）
+   */
+  async clearTypingIndicator(): Promise<void> {
+    if (this.currentMessageId && this.currentReactionId) {
+      await this.removeTypingIndicator(this.currentMessageId, this.currentReactionId);
+      this.currentMessageId = null;
+      this.currentReactionId = null;
+      console.log("[FeishuChannel] ✓ 已移除正在输入表态");
+    }
+  }
+
+  /**
+   * 解析 Markdown 表格为飞书交互卡片格式
+   * @returns 包含 beforeTable、afterTable 和 cardElements 的对象，如果没有表格则返回 null
+   */
+  private parseMarkdownTable(text: string): { beforeTable: string; afterTable: string; cardElements: any[] } | null {
+    // 检测表格：查找包含 | 的连续行，至少 2 行（表头 + 分隔线）
+    const lines = text.split("\n");
+    let tableStart = -1;
+    let tableEnd = -1;
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i].trim();
+      // 表格行特征：以 | 开头或包含 |
+      if (line.startsWith("|") || (line.includes("|") && line.includes("|"))) {
+        if (tableStart === -1) {
+          tableStart = i;
+        }
+        // 检查下一行是否是分隔线（包含 |---| 或类似的）
+        if (i + 1 < lines.length && lines[i + 1].trim().match(/^\|?[\s\-:]+\|[\s\-:]+\|?/)) {
+          tableEnd = i + 1;
+          // 继续查找表格的后续行
+          for (let j = i + 2; j < lines.length; j++) {
+            const nextLine = lines[j].trim();
+            if (nextLine.startsWith("|") || nextLine.includes("|")) {
+              tableEnd = j;
+            } else {
+              break;
+            }
+          }
+          break;
+        }
+      }
+    }
+
+    if (tableStart === -1 || tableEnd === -1) {
+      return null;
+    }
+
+    // 提取表格前的内容
+    const beforeTable = lines.slice(0, tableStart).join("\n").trim();
+
+    // 提取表格后的内容
+    const afterTable = lines.slice(tableEnd + 1).join("\n").trim();
+
+    // 解析表格数据
+    const tableLines = lines.slice(tableStart, tableEnd + 1);
+    const headers = this.parseTableRow(tableLines[0]);
+    const rows = tableLines.slice(2).map(line => this.parseTableRow(line));
+
+    // 构建飞书交互卡片元素
+    const cardElements: any[] = [];
+
+    // 表头行
+    const headerCells: any[] = headers.map(cell => ({
+      tag: "div",
+      text: {
+        tag: "plain_text",
+        content: cell
+      },
+      style: "bold"
+    }));
+
+    cardElements.push({
+      tag: "div",
+      text: {
+        tag: "lark_md",
+        content: "**" + headers.join("** | **") + "**"
+      }
+    });
+
+    // 添加分隔线
+    cardElements.push({
+      tag: "hr"
+    });
+
+    // 数据行
+    for (const row of rows) {
+      const rowCells = row.map(cell => ({
+        tag: "div",
+        text: {
+          tag: "plain_text",
+          content: cell
+        }
+      }));
+
+      cardElements.push({
+        tag: "div",
+        text: {
+          tag: "lark_md",
+          content: row.join(" | ")
+        }
+      });
+    }
+
+    return { beforeTable, afterTable, cardElements };
+  }
+
+  /**
+   * 解析表格行
+   */
+  private parseTableRow(line: string): string[] {
+    // 移除首尾的 |
+    let trimmed = line.trim();
+    if (trimmed.startsWith("|")) {
+      trimmed = trimmed.slice(1);
+    }
+    if (trimmed.endsWith("|")) {
+      trimmed = trimmed.slice(0, -1);
+    }
+
+    // 按 | 分割并清理空白
+    return trimmed.split("|").map(cell => cell.trim());
+  }
+
+  /**
+   * 将 Markdown 表格转换为文本列表格式（飞书兼容）
+   */
+  private convertMarkdownTables(text: string): string {
+    const lines = text.split("\n");
+    const result: string[] = [];
+    let i = 0;
+
+    while (i < lines.length) {
+      const line = lines[i].trim();
+
+      // 检测表格开始
+      if (line.startsWith("|") && i + 1 < lines.length && lines[i + 1].trim().match(/^\|?[\s\-:]+\|/)) {
+        // 解析表头
+        const headers = this.parseTableRow(line);
+
+        // 跳过分隔线
+        i += 2;
+
+        // 解析数据行
+        const rows: string[][] = [];
+        while (i < lines.length && (lines[i].trim().startsWith("|") || lines[i].trim().includes("|"))) {
+          rows.push(this.parseTableRow(lines[i]));
+          i++;
+        }
+
+        // 转换为列表格式
+        result.push("📋 **" + (headers[0] || "表格") + "**");
+        for (const row of rows) {
+          if (row.length > 0) {
+            const rowText = row.map((cell, idx) => {
+              const header = headers[idx] || "";
+              return `${header}: ${cell}`.trim();
+            }).filter(s => s).join(" | ");
+            result.push(`• ${rowText}`);
+          }
+        }
+        result.push(""); // 空行分隔
+      } else {
+        result.push(lines[i]);
+        i++;
+      }
+    }
+
+    return result.join("\n");
   }
 }
 

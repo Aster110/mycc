@@ -6,12 +6,23 @@
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $OutputEncoding = [System.Text.Encoding]::UTF8
 
-# 飞书凭证配置
-$env:FEISHU_APP_ID = "cli_a90eea90c5229bc2"
-$env:FEISHU_APP_SECRET = "w4QG74AVY2U55GhCmDeRVgCw21kPZRui"
-$env:FEISHU_RECEIVE_USER_ID = "oc_50e9e337f9d84fe1fc2b5b9f95073f2d"
-$env:FEISHU_RECEIVE_ID_TYPE = "chat_id"  # 群聊 ID
-$env:FEISHU_CONNECTION_MODE = "websocket"  # 使用 WebSocket 长连接接收消息
+# 加载 .env 文件
+$ENV_FILE = "$PROJECT_DIR\.env"
+if (Test-Path $ENV_FILE) {
+    Get-Content $ENV_FILE | ForEach-Object {
+        if (-not $_.Trim().StartsWith("#") -and $_.Trim() -ne "") {
+            $parts = $_.Split("=", 2)
+            if ($parts.Length -eq 2) {
+                $key = $parts[0].Trim()
+                $value = $parts[1].Trim()
+                [Environment]::SetEnvironmentVariable($key, $value, "Process")
+            }
+        }
+    }
+} else {
+    Write-Host "警告: .env 文件不存在，飞书通道可能无法工作" -ForegroundColor Yellow
+    Write-Host "请从 .env.example 复制并配置飞书凭证" -ForegroundColor Gray
+}
 
 $PROJECT_DIR = "E:\AI\mycc\AImycc"
 $SCRIPT_DIR = "$PROJECT_DIR\.claude\skills\mycc\scripts"

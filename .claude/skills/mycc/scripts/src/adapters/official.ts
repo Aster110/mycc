@@ -249,6 +249,10 @@ export class OfficialAdapter implements CCAdapter {
       if (isFirstTurn) {
         // 第一轮：直接消费 stream
         for await (const sdkMessage of session.stream()) {
+          // 调试：记录所有 SDK 发送的事件类型
+          const msgType = sdkMessage?.type || "unknown";
+          console.log(`[SDK] 发送事件类型: ${msgType}`);
+
           this.extractSessionId(sdkMessage, resolvedSessionId, session, (id) => { resolvedSessionId = id; });
           const signals = detectMultiTurnSignals(sdkMessage);
           if (signals.teamsStarted) { isTeamsMode = true; isMultiTurnMode = true; }

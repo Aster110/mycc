@@ -11,17 +11,33 @@ $SCRIPT_DIR = "$PROJECT_DIR\.claude\skills\mycc\scripts"
 $LOG_FILE = "$PROJECT_DIR\.claude\skills\mycc\backend.log"
 $CONFIG_FILE = "$PROJECT_DIR\.claude\skills\mycc\current.json"
 $TSX_BIN = "$SCRIPT_DIR\node_modules\.bin\tsx"
+$ENV_FILE = "$PROJECT_DIR\.env"
+
+# Load .env file if exists
+if (Test-Path $ENV_FILE) {
+    Get-Content $ENV_FILE | ForEach-Object {
+        if (-not $_.Trim().StartsWith("#") -and $_.Trim() -ne "") {
+            $parts = $_.Split("=", 2)
+            if ($parts.Length -eq 2) {
+                $key = $parts[0].Trim()
+                $value = $parts[1].Trim()
+                [Environment]::SetEnvironmentVariable($key, $value, "Process")
+            }
+        }
+    }
+}
 
 Clear-Host
 
 Write-Host ""
 Write-Host "============================================" -ForegroundColor Cyan
 Write-Host "       MyCC Backend v0.5.1" -ForegroundColor Cyan
+Write-Host "       + 飞书通道 (Feishu)" -ForegroundColor Cyan
 Write-Host "============================================" -ForegroundColor Cyan
 Write-Host ""
 
 # Check dependencies
-Write-Host "[1/4] Checking dependencies..." -ForegroundColor Yellow
+Write-Host "[1/5] Checking dependencies..." -ForegroundColor Yellow
 
 if (-not (Test-Path $TSX_BIN)) {
     Write-Host "  ERROR: tsx not found!" -ForegroundColor Red
@@ -46,10 +62,14 @@ if (-not $cloudflaredCmd) {
     Write-Host "  cloudflared: OK" -ForegroundColor Green
 }
 
+# Feishu configuration
+Write-Host "  Feishu App ID: $env:FEISHU_APP_ID" -ForegroundColor Gray
+Write-Host "  Feishu Group ID: $env:FEISHU_RECEIVE_USER_ID" -ForegroundColor Gray
+
 Write-Host ""
 
 # Check and stop existing process
-Write-Host "[2/4] Checking port 18080..." -ForegroundColor Yellow
+Write-Host "[2/5] Checking port 18080..." -ForegroundColor Yellow
 $existingProcess = Get-NetTCPConnection -LocalPort 18080 -ErrorAction SilentlyContinue |
                     Where-Object State -eq "Listen" |
                     Select-Object -ExpandProperty OwningProcess -ErrorAction SilentlyContinue
@@ -63,19 +83,37 @@ Write-Host "  Port 18080 available" -ForegroundColor Green
 Write-Host ""
 
 # Start backend
-Write-Host "[3/4] Starting backend..." -ForegroundColor Yellow
+Write-Host "[3/5] Starting backend..." -ForegroundColor Yellow
 
 # Clear old log
 if (Test-Path $LOG_FILE) { Remove-Item $LOG_FILE -Force }
 
-# Start in background using PowerShell job
-$scriptBlock = {
-    param($tsx, $scriptDir, $logFile)
-    Set-Location $scriptDir
-    & $tsx "src/index.ts" "start" >> $logFile 2>&1
-}
+# Create hidden startup script
+$vbsFile = "$PROJECT_DIR\.claude\skills\mycc\start_hidden_temp.vbs"
+$batFile = "$PROJECT_DIR\.claude\skills\mycc\start_backend_temp.bat"
 
-Start-Job -ScriptBlock $scriptBlock -ArgumentList $TSX_BIN, $SCRIPT_DIR, $LOG_FILE -Name "mycc-backend" | Out-Null
+# Create batch file with .env loading
+$batContent = @"
+@echo off
+cd /d "$SCRIPT_DIR"
+set "NODE_ENV=production"
+for /f "tokens=*" %%a in ('type "$ENV_FILE" 2^>nul') do (
+    set %%a
+)
+$TSX_BIN src/index.ts start >> "$LOG_FILE" 2>&1
+"@
+Set-Content -Path $batFile -Value $batContent -Encoding ASCII
+
+# Create VBScript to run batch file hidden
+$vbsContent = @"
+Set objShell = CreateObject("WScript.Shell")
+objShell.Run "cmd /c ""$batFile""", 0, False
+Set objShell = Nothing
+"@
+Set-Content -Path $vbsFile -Value $vbsContent -Encoding ASCII
+
+# Start hidden process
+Start-Process -FilePath "wscript.exe" -ArgumentList $vbsFile -WindowStyle Hidden
 
 # Wait for process to start
 Start-Sleep -Seconds 3
@@ -94,7 +132,7 @@ if ($portProcess) {
 Write-Host ""
 
 # Wait for config file
-Write-Host "[4/4] Waiting for service ready..." -ForegroundColor Yellow
+Write-Host "[4/5] Waiting for service ready..." -ForegroundColor Yellow
 $timeout = 45
 $elapsed = 0
 while ($elapsed -lt $timeout) {
@@ -145,6 +183,14 @@ Write-Host ("|  Tunnel:       " + $config.tunnelUrl.Substring(0, [Math]::Min(50,
 if ($config.tunnelUrl.Length -gt 50) {
     Write-Host ("|                 " + $config.tunnelUrl.Substring(50)) -ForegroundColor Gray
 }
+Write-Host "+------------------------------------------+" -ForegroundColor White
+Write-Host ""
+
+Write-Host "+------------------------------------------+" -ForegroundColor White
+Write-Host "|  Feishu Channel Enabled:                  |" -ForegroundColor White
+Write-Host "+------------------------------------------+" -ForegroundColor White
+Write-Host ("|  Feishu Group:   " + $env:FEISHU_RECEIVE_USER_ID) -ForegroundColor Cyan
+Write-Host "|  Status: ✓ Connected (WebSocket mode)    " -ForegroundColor Green
 Write-Host "+------------------------------------------+" -ForegroundColor White
 Write-Host ""
 

@@ -77,6 +77,36 @@ export function loadPublicUrl(...searchDirs: string[]): string | null {
 }
 
 /**
+ * 加载 .env 文件到 process.env
+ *
+ * 优先级：
+ *   1. searchDirs 中的 .env 文件（按顺序查找，第一个找到即加载）
+ *   2. 不覆盖已存在的 process.env 变量
+ *
+ * @param searchDirs 搜索目录列表（按优先级排列）
+ */
+export function loadEnvFile(...searchDirs: string[]): void {
+  for (const dir of searchDirs) {
+    const envPath = join(dir, ".env");
+    if (!existsSync(envPath)) continue;
+
+    try {
+      const content = readFileSync(envPath, "utf-8");
+      const parsed = parseEnvFile(content);
+
+      // 将解析的环境变量设置到 process.env（不覆盖已存在的）
+      for (const [key, value] of Object.entries(parsed)) {
+        if (process.env[key] === undefined) {
+          process.env[key] = value;
+        }
+      }
+    } catch {
+      // 读取失败，跳过
+    }
+  }
+}
+
+/**
  * 验证并清理 URL
  * - 必须 https:// 开头
  * - 去除尾部斜杠和空格
