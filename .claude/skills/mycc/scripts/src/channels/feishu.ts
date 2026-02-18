@@ -1010,10 +1010,16 @@ export class FeishuChannel implements MessageChannel {
       });
     }
 
-    // 返回完整的交互卡片（不包含 header，可能表格元素不支持）
+    // 返回完整的交互卡片（添加 header）
     return {
       config: {
         wide_screen_mode: true
+      },
+      header: {
+        title: {
+          tag: "plain_text",
+          content: beforeTable.trim().split("\n").pop() || "数据表格"
+        }
       },
       elements
     };

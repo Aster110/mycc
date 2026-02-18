@@ -11,6 +11,8 @@
 import { execSync } from "child_process";
 import { mkdirSync, writeFileSync, existsSync, appendFileSync } from "fs";
 import { homedir } from "os";
+import { dirname } from "path";
+import { fileURLToPath } from "url";
 import { join } from "path";
 
 // 从新模块导入
@@ -95,8 +97,14 @@ async function startServer(args: string[]) {
   }
   console.log(chalk.green("✓ Claude Code CLI 可用\n"));
 
-  // 加载 .env 文件到 process.env（搜索顺序：cwd → scripts/）
-  const scriptsDir = new URL("..", import.meta.url).pathname;
+  // 获取 scripts 目录的父目录（跨平台兼容）
+  // 使用 fileURLToPath 确保 Windows/Linux/macOS 都能正确解析
+  const __filename = fileURLToPath(import.meta.url);
+  const __dirname = dirname(__filename);
+  const scriptsDir = dirname(__dirname); // scripts/ (不包含 src)
+
+  // 第一次加载 .env 文件（搜索可能的位置）
+  // 注意：此时可能还不知道项目根目录，所以搜索多个位置
   loadEnvFile(process.cwd(), scriptsDir);
 
   // 检测公网模式（读取 .env 中的 PUBLIC_URL）
@@ -184,6 +192,9 @@ async function startServer(args: string[]) {
   if (tlsConfig) {
     console.log(chalk.green("✓ 检测到 Origin Certificate，使用 HTTPS\n"));
   }
+
+  // 再次加载 .env 文件（使用确定的项目根目录）
+  loadEnvFile(cwd);
 
   const server = new HttpServer(pairCode, cwd, authToken, tlsConfig);
 
