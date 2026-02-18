@@ -6,6 +6,16 @@
 0-System/context.md
 0-System/about-me/*
 !0-System/about-me/README.md
+0-System/tasks/*
+!0-System/tasks/README.md
+0-System/welcome.md
+1-Inbox/*.md
+!1-Inbox/README.md
+3-Thinking/agent*.md
+3-Thinking/ai-products-research.md
+
+# Tell-me 个人配置
+.claude/skills/tell-me/config.json
 
 # 任务历史
 .claude/skills/scheduler/history.md
