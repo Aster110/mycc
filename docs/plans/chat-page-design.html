@@ -1,0 +1,2137 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MyCC - Chat Page Design Prototype</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+/* ============================================
+   CSS VARIABLES — Theme System
+   ============================================ */
+:root {
+  --font-display: 'Outfit', system-ui, -apple-system, sans-serif;
+  --font-body: 'Outfit', system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+  --font-mono: 'JetBrains Mono', 'Menlo', monospace;
+  --sidebar-width: 272px;
+  --skill-panel-width: 320px;
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 20px;
+  --transition: 220ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+[data-theme="dark"] {
+  --bg-base: #0E1015;
+  --bg-surface: #181B24;
+  --bg-elevated: #222735;
+  --bg-hover: #2C3244;
+  --bg-active: #343B50;
+  --bg-input: #1E2230;
+  --text-primary: #E4E5EA;
+  --text-secondary: #8E95A9;
+  --text-muted: #5A6178;
+  --text-inverse: #0E1015;
+  --accent: #E8A93E;
+  --accent-hover: #D4962E;
+  --accent-subtle: rgba(232, 169, 62, 0.10);
+  --accent-border: rgba(232, 169, 62, 0.25);
+  --success: #3DD68C;
+  --success-subtle: rgba(61, 214, 140, 0.10);
+  --error: #F47174;
+  --error-subtle: rgba(244, 113, 116, 0.10);
+  --info: #5B9CF6;
+  --info-subtle: rgba(91, 156, 246, 0.10);
+  --border: rgba(255, 255, 255, 0.06);
+  --border-strong: rgba(255, 255, 255, 0.10);
+  --shadow-sm: 0 1px 3px rgba(0,0,0,0.4);
+  --shadow-md: 0 4px 16px rgba(0,0,0,0.5);
+  --shadow-lg: 0 12px 40px rgba(0,0,0,0.6);
+  --user-bubble: #2A3A5C;
+  --user-bubble-text: #C8D6F0;
+  --assistant-bubble: #1E2230;
+  --assistant-bubble-text: #E4E5EA;
+  --noise-opacity: 0.03;
+}
+
+[data-theme="light"] {
+  --bg-base: #F5F3EE;
+  --bg-surface: #FFFFFF;
+  --bg-elevated: #EDE9E0;
+  --bg-hover: #E5E0D5;
+  --bg-active: #DDD7CA;
+  --bg-input: #FFFFFF;
+  --text-primary: #1A1D2B;
+  --text-secondary: #6B7085;
+  --text-muted: #9CA3B5;
+  --text-inverse: #FFFFFF;
+  --accent: #C48B2C;
+  --accent-hover: #A97520;
+  --accent-subtle: rgba(196, 139, 44, 0.08);
+  --accent-border: rgba(196, 139, 44, 0.30);
+  --success: #16A34A;
+  --success-subtle: rgba(22, 163, 74, 0.08);
+  --error: #DC2626;
+  --error-subtle: rgba(220, 38, 38, 0.08);
+  --info: #2563EB;
+  --info-subtle: rgba(37, 99, 235, 0.08);
+  --border: rgba(0, 0, 0, 0.08);
+  --border-strong: rgba(0, 0, 0, 0.14);
+  --shadow-sm: 0 1px 3px rgba(0,0,0,0.06);
+  --shadow-md: 0 4px 16px rgba(0,0,0,0.08);
+  --shadow-lg: 0 12px 40px rgba(0,0,0,0.12);
+  --user-bubble: #E8DFD0;
+  --user-bubble-text: #3D3526;
+  --assistant-bubble: #FFFFFF;
+  --assistant-bubble-text: #1A1D2B;
+  --noise-opacity: 0.02;
+}
+
+/* ============================================
+   RESET & BASE
+   ============================================ */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  height: 100%;
+  font-family: var(--font-body);
+  background: var(--bg-base);
+  color: var(--text-primary);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  transition: background var(--transition), color var(--transition);
+}
+
+/* Subtle noise texture overlay */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='1'/%3E%3C/svg%3E");
+  opacity: var(--noise-opacity);
+  pointer-events: none;
+  z-index: 9999;
+}
+
+::-webkit-scrollbar { width: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+
+button { cursor: pointer; border: none; background: none; font-family: inherit; color: inherit; }
+input, textarea { font-family: inherit; }
+
+/* ============================================
+   LAYOUT — Three-Panel Structure
+   ============================================ */
+.app-layout {
+  display: flex;
+  height: 100vh;
+  overflow: hidden;
+}
+
+/* ============================================
+   SIDEBAR
+   ============================================ */
+.sidebar {
+  width: var(--sidebar-width);
+  min-width: var(--sidebar-width);
+  background: var(--bg-surface);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  transition: transform var(--transition), opacity var(--transition);
+  z-index: 30;
+}
+
+.sidebar-header {
+  padding: 20px 16px 12px;
+  flex-shrink: 0;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.brand-logo {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  background: linear-gradient(135deg, var(--accent) 0%, #D47F20 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 15px;
+  color: #FFF;
+  letter-spacing: -0.5px;
+  box-shadow: 0 2px 8px rgba(232, 169, 62, 0.3);
+  flex-shrink: 0;
+}
+
+.brand-text {
+  display: flex;
+  flex-direction: column;
+}
+
+.brand-name {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 16px;
+  letter-spacing: -0.3px;
+  line-height: 1.2;
+}
+
+.brand-subtitle {
+  font-size: 11px;
+  color: var(--text-muted);
+  letter-spacing: 0.3px;
+}
+
+.new-chat-btn {
+  width: 100%;
+  padding: 10px 14px;
+  background: var(--accent);
+  color: var(--text-inverse);
+  border-radius: var(--radius-md);
+  font-weight: 600;
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  transition: all var(--transition);
+  box-shadow: 0 2px 8px rgba(232, 169, 62, 0.25);
+}
+.new-chat-btn:hover {
+  background: var(--accent-hover);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(232, 169, 62, 0.35);
+}
+.new-chat-btn svg { width: 16px; height: 16px; }
+
+/* Search */
+.sidebar-search {
+  padding: 0 16px 8px;
+  flex-shrink: 0;
+}
+
+.search-input {
+  width: 100%;
+  padding: 8px 12px 8px 34px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-size: 13px;
+  outline: none;
+  transition: all var(--transition);
+}
+.search-input:focus {
+  border-color: var(--accent-border);
+  box-shadow: 0 0 0 3px var(--accent-subtle);
+}
+.search-input::placeholder { color: var(--text-muted); }
+
+.search-wrapper {
+  position: relative;
+}
+.search-icon {
+  position: absolute;
+  left: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--text-muted);
+  width: 15px;
+  height: 15px;
+}
+
+/* Session List */
+.session-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 8px;
+}
+
+.session-group-label {
+  padding: 12px 10px 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+}
+
+.session-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all var(--transition);
+  margin-bottom: 2px;
+  position: relative;
+}
+.session-item:hover { background: var(--bg-hover); }
+.session-item.active {
+  background: var(--accent-subtle);
+  border: 1px solid var(--accent-border);
+}
+.session-item.active .session-title { color: var(--accent); }
+
+.session-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--success);
+  flex-shrink: 0;
+  margin-top: 5px;
+}
+.session-dot.inactive { background: var(--text-muted); opacity: 0.4; }
+
+.session-info { flex: 1; min-width: 0; }
+.session-title {
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.4;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.session-preview {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.session-time {
+  font-size: 11px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+/* Sidebar Tabs */
+.sidebar-tabs {
+  display: flex;
+  padding: 0 12px;
+  gap: 0;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.sidebar-tab {
+  flex: 1;
+  padding: 10px 0;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-muted);
+  text-align: center;
+  border-bottom: 2px solid transparent;
+  transition: all var(--transition);
+  white-space: nowrap;
+}
+.sidebar-tab:hover { color: var(--text-secondary); }
+.sidebar-tab.active {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+/* Sidebar Tab Content */
+.sidebar-tab-content {
+  display: none;
+  flex-direction: column;
+  flex: 1;
+  overflow: hidden;
+}
+.sidebar-tab-content.active {
+  display: flex;
+}
+
+/* Sidebar Skills List (compact) */
+.sidebar-skill-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px;
+}
+
+.sidebar-skill-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all var(--transition);
+  margin-bottom: 2px;
+}
+.sidebar-skill-item:hover { background: var(--bg-hover); }
+
+.sidebar-skill-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  flex-shrink: 0;
+}
+
+.sidebar-skill-info { flex: 1; min-width: 0; }
+.sidebar-skill-name {
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.3;
+}
+.sidebar-skill-trigger {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+}
+
+/* Automation Panel */
+.automation-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px;
+}
+
+.automation-card {
+  padding: 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  margin-bottom: 6px;
+  transition: all var(--transition);
+}
+.automation-card:hover {
+  border-color: var(--border-strong);
+  background: var(--bg-hover);
+}
+
+.automation-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.automation-name {
+  font-size: 13px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.automation-schedule {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  margin-bottom: 4px;
+}
+
+.automation-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.automation-status {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.automation-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+.automation-dot.active { background: var(--success); }
+.automation-dot.paused { background: var(--text-muted); }
+.automation-dot.error { background: var(--error); }
+
+.automation-toggle {
+  width: 32px;
+  height: 18px;
+  border-radius: 9px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  position: relative;
+  cursor: pointer;
+  transition: all var(--transition);
+  flex-shrink: 0;
+}
+.automation-toggle.on {
+  background: var(--success);
+  border-color: var(--success);
+}
+.automation-toggle::after {
+  content: '';
+  position: absolute;
+  top: 1px;
+  left: 1px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: white;
+  transition: transform var(--transition);
+  box-shadow: 0 1px 2px rgba(0,0,0,0.2);
+}
+.automation-toggle.on::after { transform: translateX(14px); }
+
+.add-automation-btn {
+  width: 100%;
+  padding: 10px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  transition: all var(--transition);
+  margin-top: 4px;
+}
+.add-automation-btn:hover {
+  border-color: var(--accent-border);
+  color: var(--accent);
+  background: var(--accent-subtle);
+}
+
+/* Sidebar Footer */
+.sidebar-footer {
+  padding: 12px 16px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+}
+
+.user-info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.user-avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-sm);
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  font-weight: 600;
+  color: white;
+  flex-shrink: 0;
+}
+
+.user-name {
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.sidebar-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.sidebar-action-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  transition: all var(--transition);
+}
+.sidebar-action-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+}
+.sidebar-action-btn svg { width: 18px; height: 18px; }
+
+/* ============================================
+   MAIN CHAT AREA
+   ============================================ */
+.chat-area {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  position: relative;
+}
+
+/* Chat Header */
+.chat-header {
+  padding: 14px 20px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  background: var(--bg-surface);
+}
+
+.chat-header-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.mobile-menu-btn {
+  display: none;
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-sm);
+  align-items: center;
+  justify-content: center;
+  color: var(--text-secondary);
+  transition: all var(--transition);
+}
+.mobile-menu-btn:hover { background: var(--bg-hover); }
+.mobile-menu-btn svg { width: 20px; height: 20px; }
+
+.chat-title-area { display: flex; flex-direction: column; }
+.chat-title {
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+.chat-status {
+  font-size: 12px;
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--success);
+  animation: pulse 2s infinite;
+}
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+.chat-header-right {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.header-btn {
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  transition: all var(--transition);
+  position: relative;
+}
+.header-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+}
+.header-btn.active {
+  background: var(--accent-subtle);
+  color: var(--accent);
+}
+.header-btn svg { width: 18px; height: 18px; }
+
+.header-btn .badge {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 2px solid var(--bg-surface);
+}
+
+/* Chat Messages Container */
+.chat-messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* Empty State */
+.empty-state {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.empty-content {
+  text-align: center;
+  max-width: 400px;
+}
+
+.empty-avatar {
+  width: 72px;
+  height: 72px;
+  border-radius: 18px;
+  background: linear-gradient(135deg, var(--accent) 0%, #D47F20 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 28px;
+  color: white;
+  margin: 0 auto 20px;
+  box-shadow: 0 8px 24px rgba(232, 169, 62, 0.25);
+}
+
+.empty-greeting {
+  font-size: 22px;
+  font-weight: 600;
+  margin-bottom: 8px;
+  font-family: var(--font-display);
+}
+
+.empty-hint {
+  color: var(--text-secondary);
+  font-size: 14px;
+  line-height: 1.6;
+  margin-bottom: 28px;
+}
+
+/* Quick Actions */
+.quick-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: center;
+}
+
+.quick-action {
+  padding: 8px 16px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  transition: all var(--transition);
+  white-space: nowrap;
+}
+.quick-action:hover {
+  border-color: var(--accent-border);
+  color: var(--accent);
+  background: var(--accent-subtle);
+}
+
+/* Message Bubbles */
+.message-row {
+  display: flex;
+  gap: 10px;
+  max-width: 85%;
+  animation: messageIn 0.3s ease-out;
+}
+.message-row.user {
+  align-self: flex-end;
+  flex-direction: row-reverse;
+}
+.message-row.assistant { align-self: flex-start; }
+.message-row.system {
+  align-self: center;
+  max-width: 100%;
+}
+
+@keyframes messageIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.msg-avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 600;
+  margin-top: 2px;
+}
+.msg-avatar.cc {
+  background: linear-gradient(135deg, var(--accent) 0%, #D47F20 100%);
+  color: white;
+}
+.msg-avatar.user-av {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+}
+
+.msg-bubble {
+  padding: 10px 14px;
+  border-radius: var(--radius-md);
+  font-size: 14px;
+  line-height: 1.65;
+  max-width: 100%;
+}
+
+.message-row.user .msg-bubble {
+  background: var(--user-bubble);
+  color: var(--user-bubble-text);
+  border-bottom-right-radius: 4px;
+}
+
+.message-row.assistant .msg-bubble {
+  background: var(--assistant-bubble);
+  color: var(--assistant-bubble-text);
+  border: 1px solid var(--border);
+  border-bottom-left-radius: 4px;
+}
+
+.msg-time {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 4px;
+  padding: 0 4px;
+}
+.message-row.user .msg-time { text-align: right; }
+
+/* Tool Call Messages (compact) */
+.tool-msg {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  align-self: flex-start;
+  margin-left: 38px;
+  cursor: pointer;
+  transition: all var(--transition);
+}
+.tool-msg:hover {
+  background: var(--bg-hover);
+  border-color: var(--border-strong);
+}
+
+.tool-icon {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  flex-shrink: 0;
+}
+.tool-icon.reading { background: var(--info-subtle); color: var(--info); }
+.tool-icon.writing { background: var(--success-subtle); color: var(--success); }
+.tool-icon.running { background: var(--accent-subtle); color: var(--accent); }
+
+.tool-result {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-left: auto;
+}
+
+/* Thinking Message (collapsed) */
+.thinking-msg {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  background: transparent;
+  border: 1px dashed var(--border-strong);
+  border-radius: 20px;
+  font-size: 12px;
+  color: var(--text-muted);
+  align-self: flex-start;
+  margin-left: 38px;
+  cursor: pointer;
+  transition: all var(--transition);
+  font-style: italic;
+}
+.thinking-msg:hover {
+  background: var(--bg-hover);
+}
+
+/* System Messages */
+.system-msg {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 16px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.system-divider {
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+
+/* Chat Input Area */
+.chat-input-area {
+  padding: 12px 20px 16px;
+  flex-shrink: 0;
+  background: var(--bg-surface);
+  border-top: 1px solid var(--border);
+}
+
+/* Quick actions bar above input */
+.input-quick-actions {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 10px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+.input-quick-actions::-webkit-scrollbar { display: none; }
+
+.input-quick-action {
+  padding: 5px 12px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  transition: all var(--transition);
+  flex-shrink: 0;
+}
+.input-quick-action:hover {
+  border-color: var(--accent-border);
+  color: var(--accent);
+  background: var(--accent-subtle);
+}
+
+.input-wrapper {
+  position: relative;
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.input-box {
+  flex: 1;
+  min-height: 44px;
+  max-height: 160px;
+  padding: 10px 14px;
+  background: var(--bg-input);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  color: var(--text-primary);
+  font-size: 14px;
+  line-height: 1.5;
+  resize: none;
+  outline: none;
+  transition: all var(--transition);
+}
+.input-box:focus {
+  border-color: var(--accent-border);
+  box-shadow: 0 0 0 3px var(--accent-subtle);
+}
+.input-box::placeholder { color: var(--text-muted); }
+
+.send-btn {
+  width: 44px;
+  height: 44px;
+  border-radius: var(--radius-md);
+  background: var(--accent);
+  color: var(--text-inverse);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all var(--transition);
+  flex-shrink: 0;
+  box-shadow: 0 2px 8px rgba(232, 169, 62, 0.25);
+}
+.send-btn:hover {
+  background: var(--accent-hover);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(232, 169, 62, 0.35);
+}
+.send-btn:disabled {
+  background: var(--bg-elevated);
+  color: var(--text-muted);
+  box-shadow: none;
+  transform: none;
+  cursor: not-allowed;
+}
+.send-btn svg { width: 18px; height: 18px; }
+
+.input-mode-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 6px;
+  padding: 0 4px;
+}
+
+.mode-indicator {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-muted);
+  padding: 3px 8px;
+  border-radius: 12px;
+  transition: all var(--transition);
+  cursor: pointer;
+}
+.mode-indicator:hover {
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+}
+.mode-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+.mode-dot.normal { background: var(--success); }
+.mode-dot.plan { background: var(--info); }
+
+.input-hint {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+/* ============================================
+   SKILL PANEL (Right Side)
+   ============================================ */
+.skill-panel {
+  width: var(--skill-panel-width);
+  min-width: var(--skill-panel-width);
+  background: var(--bg-surface);
+  border-left: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  transition: transform var(--transition), opacity var(--transition);
+  overflow: hidden;
+}
+
+.skill-panel.hidden {
+  width: 0;
+  min-width: 0;
+  border: none;
+  transform: translateX(100%);
+  opacity: 0;
+  pointer-events: none;
+}
+
+.skill-panel-header {
+  padding: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.skill-panel-title {
+  font-size: 15px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.skill-panel-title .title-icon {
+  width: 20px;
+  height: 20px;
+  color: var(--accent);
+}
+
+.skill-close-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  transition: all var(--transition);
+}
+.skill-close-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+}
+.skill-close-btn svg { width: 16px; height: 16px; }
+
+/* Skill Tabs */
+.skill-tabs {
+  display: flex;
+  padding: 8px 16px 0;
+  gap: 0;
+  flex-shrink: 0;
+}
+
+.skill-tab {
+  flex: 1;
+  padding: 8px 0;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-muted);
+  text-align: center;
+  border-bottom: 2px solid transparent;
+  transition: all var(--transition);
+}
+.skill-tab:hover { color: var(--text-secondary); }
+.skill-tab.active {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+/* Skill List */
+.skill-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px;
+}
+
+.skill-card {
+  padding: 14px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  margin-bottom: 8px;
+  cursor: pointer;
+  transition: all var(--transition);
+}
+.skill-card:hover {
+  border-color: var(--border-strong);
+  background: var(--bg-hover);
+}
+
+.skill-card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.skill-icon-name {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.skill-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  flex-shrink: 0;
+}
+.skill-icon.purple { background: #7C3AED20; }
+.skill-icon.blue { background: #3B82F620; }
+.skill-icon.green { background: #22C55E20; }
+.skill-icon.amber { background: #F59E0B20; }
+.skill-icon.red { background: #EF444420; }
+
+.skill-name {
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.skill-trigger {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  margin-top: 2px;
+}
+
+.skill-status-badge {
+  padding: 3px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 500;
+  flex-shrink: 0;
+}
+.skill-status-badge.installed {
+  background: var(--success-subtle);
+  color: var(--success);
+}
+.skill-status-badge.available {
+  background: var(--bg-elevated);
+  color: var(--text-muted);
+}
+
+.skill-desc {
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.skill-tags {
+  display: flex;
+  gap: 6px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+
+.skill-tag {
+  padding: 2px 8px;
+  background: var(--bg-elevated);
+  border-radius: 10px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+/* ============================================
+   SETTINGS PANEL (overlays sidebar)
+   ============================================ */
+.settings-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.5);
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--transition);
+  backdrop-filter: blur(4px);
+}
+.settings-overlay.open {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.settings-panel {
+  background: var(--bg-surface);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-lg);
+  width: 480px;
+  max-width: 90vw;
+  max-height: 85vh;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  transform: scale(0.95) translateY(10px);
+  transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.settings-overlay.open .settings-panel {
+  transform: scale(1) translateY(0);
+}
+
+.settings-header {
+  padding: 20px 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--border);
+}
+
+.settings-title {
+  font-size: 18px;
+  font-weight: 600;
+  font-family: var(--font-display);
+}
+
+.settings-body {
+  padding: 24px;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.settings-section {
+  margin-bottom: 28px;
+}
+.settings-section:last-child { margin-bottom: 0; }
+
+.settings-section-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  margin-bottom: 14px;
+}
+
+.setting-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+}
+.setting-row:last-child { border-bottom: none; }
+
+.setting-label {
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.setting-desc {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+
+/* Toggle Switch */
+.toggle {
+  width: 44px;
+  height: 24px;
+  border-radius: 12px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  position: relative;
+  cursor: pointer;
+  transition: all var(--transition);
+  flex-shrink: 0;
+}
+.toggle.on {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.toggle::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: white;
+  transition: transform var(--transition);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+}
+.toggle.on::after { transform: translateX(20px); }
+
+/* Select Dropdown */
+.setting-select {
+  padding: 6px 12px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-size: 13px;
+  outline: none;
+  cursor: pointer;
+}
+
+/* ============================================
+   MOBILE OVERLAY FOR SIDEBAR
+   ============================================ */
+.sidebar-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.5);
+  z-index: 29;
+  backdrop-filter: blur(4px);
+}
+
+/* ============================================
+   RESPONSIVE
+   ============================================ */
+@media (max-width: 1024px) {
+  .skill-panel:not(.hidden) {
+    position: fixed;
+    right: 0;
+    top: 0;
+    bottom: 0;
+    z-index: 31;
+    box-shadow: var(--shadow-lg);
+  }
+}
+
+@media (max-width: 768px) {
+  .sidebar {
+    position: fixed;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    z-index: 30;
+    transform: translateX(-100%);
+    box-shadow: var(--shadow-lg);
+  }
+  .sidebar.open { transform: translateX(0); }
+  .sidebar-overlay.open { display: block; }
+  .mobile-menu-btn { display: flex; }
+  .message-row { max-width: 95%; }
+  .chat-messages { padding: 12px; }
+  .chat-input-area { padding: 10px 12px 14px; }
+  .quick-actions { gap: 6px; }
+  .quick-action { font-size: 12px; padding: 6px 12px; }
+}
+
+/* ============================================
+   LOADING ANIMATION
+   ============================================ */
+.typing-indicator {
+  display: flex;
+  gap: 5px;
+  padding: 10px 14px;
+  align-items: center;
+}
+
+.typing-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  animation: typingBounce 1.4s infinite;
+}
+.typing-dot:nth-child(2) { animation-delay: 0.2s; }
+.typing-dot:nth-child(3) { animation-delay: 0.4s; }
+
+@keyframes typingBounce {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
+  30% { transform: translateY(-6px); opacity: 1; }
+}
+
+/* Markdown-like content styling in messages */
+.msg-bubble code {
+  background: var(--bg-elevated);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.msg-bubble strong {
+  font-weight: 600;
+}
+
+/* ============================================
+   DESIGN NOTES OVERLAY (prototype only)
+   ============================================ */
+.design-notes {
+  position: fixed;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 14px 20px;
+  font-size: 12px;
+  color: var(--text-muted);
+  z-index: 100;
+  box-shadow: var(--shadow-md);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  max-width: 600px;
+}
+
+.design-notes-label {
+  font-weight: 600;
+  color: var(--accent);
+  white-space: nowrap;
+}
+
+.design-notes-btns {
+  display: flex;
+  gap: 6px;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.dn-btn {
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 500;
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  transition: all var(--transition);
+}
+.dn-btn:hover { background: var(--bg-hover); }
+.dn-btn.active { background: var(--accent); color: var(--text-inverse); border-color: var(--accent); }
+</style>
+</head>
+<body>
+
+<div class="app-layout">
+
+  <!-- ====== SIDEBAR ====== -->
+  <div class="sidebar" id="sidebar">
+    <div class="sidebar-header">
+      <div class="brand">
+        <div class="brand-logo">cc</div>
+        <div class="brand-text">
+          <div class="brand-name">MyCC</div>
+          <div class="brand-subtitle">你的个人助手</div>
+        </div>
+      </div>
+      <button class="new-chat-btn" onclick="alert('新建对话')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        新对话
+      </button>
+    </div>
+
+    <div class="sidebar-search">
+      <div class="search-wrapper">
+        <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <input type="text" class="search-input" placeholder="搜索对话...">
+      </div>
+    </div>
+
+    <div class="session-list">
+      <div class="session-group-label">今天</div>
+
+      <div class="session-item active">
+        <div class="session-dot"></div>
+        <div class="session-info">
+          <div class="session-title">个人助手前端设计</div>
+          <div class="session-preview">我们让专业的前端设计...</div>
+        </div>
+        <div class="session-time">刚刚</div>
+      </div>
+
+      <div class="session-item">
+        <div class="session-dot inactive"></div>
+        <div class="session-info">
+          <div class="session-title">周报整理</div>
+          <div class="session-preview">帮我把这周的进展整理一下</div>
+        </div>
+        <div class="session-time">14:30</div>
+      </div>
+
+      <div class="session-item">
+        <div class="session-dot inactive"></div>
+        <div class="session-info">
+          <div class="session-title">VPS 部署排查</div>
+          <div class="session-preview">SSH 连接超时的问题解决了</div>
+        </div>
+        <div class="session-time">10:15</div>
+      </div>
+
+      <div class="session-group-label">昨天</div>
+
+      <div class="session-item">
+        <div class="session-dot inactive"></div>
+        <div class="session-info">
+          <div class="session-title">mycc 后端模板系统</div>
+          <div class="session-preview">用户注册后自动初始化 workspace</div>
+        </div>
+        <div class="session-time">昨天</div>
+      </div>
+
+      <div class="session-item">
+        <div class="session-dot inactive"></div>
+        <div class="session-info">
+          <div class="session-title">Kiro-Go 状态检查</div>
+          <div class="session-preview">服务运行正常，请求量稳定</div>
+        </div>
+        <div class="session-time">昨天</div>
+      </div>
+
+      <div class="session-group-label">更早</div>
+
+      <div class="session-item">
+        <div class="session-dot inactive"></div>
+        <div class="session-info">
+          <div class="session-title">阅读笔记：思考快与慢</div>
+          <div class="session-preview">系统1和系统2的核心观点</div>
+        </div>
+        <div class="session-time">2/17</div>
+      </div>
+
+      <div class="session-item">
+        <div class="session-dot inactive"></div>
+        <div class="session-info">
+          <div class="session-title">Claude API 研究</div>
+          <div class="session-preview">Batch API 的使用方式和限制</div>
+        </div>
+        <div class="session-time">2/15</div>
+      </div>
+    </div>
+
+    <div class="sidebar-footer">
+      <div class="user-info">
+        <div class="user-avatar">大</div>
+        <div class="user-name">大辉哥</div>
+      </div>
+      <div class="sidebar-actions">
+        <button class="sidebar-action-btn" onclick="toggleTheme()" title="切换主题">
+          <svg id="theme-icon-light" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="display:none"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
+          <svg id="theme-icon-dark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/></svg>
+        </button>
+        <button class="sidebar-action-btn" onclick="toggleSettings()" title="设置">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-2 2 2 2 0 01-2-2v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 01-2-2 2 2 0 012-2h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 012-2 2 2 0 012 2v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 012 2 2 2 0 01-2 2h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Sidebar overlay for mobile -->
+  <div class="sidebar-overlay" id="sidebar-overlay" onclick="closeSidebar()"></div>
+
+  <!-- ====== MAIN CHAT AREA ====== -->
+  <div class="chat-area">
+    <div class="chat-header">
+      <div class="chat-header-left">
+        <button class="mobile-menu-btn" onclick="openSidebar()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+        </button>
+        <div class="chat-title-area">
+          <div class="chat-title">个人助手前端设计</div>
+          <div class="chat-status">
+            <span class="status-dot"></span>
+            cc 在线
+          </div>
+        </div>
+      </div>
+      <div class="chat-header-right">
+        <button class="header-btn" title="搜索消息">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        </button>
+        <button class="header-btn" id="skill-toggle-btn" onclick="toggleSkillPanel()" title="技能面板">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M14.7 6.3a1 1 0 000 1.4l1.6 1.6a1 1 0 001.4 0l3.77-3.77a6 6 0 01-7.94 7.94l-6.91 6.91a2.12 2.12 0 01-3-3l6.91-6.91a6 6 0 017.94-7.94l-3.76 3.76z"/></svg>
+          <span class="badge"></span>
+        </button>
+        <button class="header-btn" title="更多选项">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></svg>
+        </button>
+      </div>
+    </div>
+
+    <div class="chat-messages" id="chat-messages">
+      <!-- System divider -->
+      <div class="system-msg">
+        <span class="system-divider"></span>
+        <span>2月19日 下午</span>
+        <span class="system-divider"></span>
+      </div>
+
+      <!-- User message -->
+      <div class="message-row user">
+        <div class="msg-avatar user-av">大</div>
+        <div>
+          <div class="msg-bubble">
+            我们让专业的前端设计，设计一下整体的会话页面吧，包括技能的面板，会话管理，个性化设置等等的处理，让这个个人助手工具更好用友好。
+          </div>
+          <div class="msg-time">19:10</div>
+        </div>
+      </div>
+
+      <!-- Thinking (collapsed) -->
+      <div class="thinking-msg" onclick="this.nextElementSibling.style.display = this.nextElementSibling.style.display === 'none' ? 'block' : 'none'">
+        💭 cc 正在思考... <span style="margin-left:auto;font-size:11px;color:var(--text-muted)">▶</span>
+      </div>
+      <div style="display:none;margin-left:38px;padding:8px 12px;background:var(--bg-elevated);border-radius:var(--radius-sm);font-size:12px;color:var(--text-muted);line-height:1.6;margin-bottom:4px;border:1px dashed var(--border-strong)">
+        用户希望我对整个会话页面做专业的前端设计。我需要考虑：侧边栏布局、会话管理、技能面板、个性化设置...先看看当前的代码结构。
+      </div>
+
+      <!-- Tool calls (compact pill style) -->
+      <div class="tool-msg">
+        <span class="tool-icon reading">📖</span>
+        正在读取 <code style="font-size:11px;margin:0 2px">ChatPage.tsx</code>
+        <span class="tool-result">551 行</span>
+      </div>
+
+      <div class="tool-msg">
+        <span class="tool-icon reading">📖</span>
+        正在读取 <code style="font-size:11px;margin:0 2px">ChatInput.tsx</code>
+        <span class="tool-result">266 行</span>
+      </div>
+
+      <div class="tool-msg">
+        <span class="tool-icon reading">🔍</span>
+        正在探索前端代码结构
+        <span class="tool-result">34 文件</span>
+      </div>
+
+      <!-- Assistant message -->
+      <div class="message-row assistant">
+        <div class="msg-avatar cc">cc</div>
+        <div>
+          <div class="msg-bubble">
+            好的，我已经分析完当前的前端代码结构了。现在给你一个完整的设计方案：<br><br>
+            <strong>设计方向：「暖调工作室」</strong><br><br>
+            核心理念是让 cc 感觉像一个<strong>温暖的搭档</strong>，而不是冷冰冰的 AI 工具。主要改动：<br><br>
+            1. <strong>侧边栏优先</strong> — 会话列表始终可见，支持搜索和分组<br>
+            2. <strong>技能面板</strong> — 右侧滑出，展示已安装技能和市场<br>
+            3. <strong>消息精简</strong> — 工具调用压缩为小药丸，思考过程默认折叠<br>
+            4. <strong>快捷指令</strong> — 输入框上方显示常用技能触发词
+          </div>
+          <div class="msg-time">19:12</div>
+        </div>
+      </div>
+
+      <!-- Another user message -->
+      <div class="message-row user">
+        <div class="msg-avatar user-av">大</div>
+        <div>
+          <div class="msg-bubble">这个方向很好，展开说说技能面板的设计？</div>
+          <div class="msg-time">19:13</div>
+        </div>
+      </div>
+
+      <!-- Tool call -->
+      <div class="tool-msg">
+        <span class="tool-icon writing">✏️</span>
+        正在编辑 <code style="font-size:11px;margin:0 2px">design.html</code>
+        <span class="tool-result" style="color:var(--success)">+320 行</span>
+      </div>
+
+      <!-- Assistant with typing indicator -->
+      <div class="message-row assistant">
+        <div class="msg-avatar cc">cc</div>
+        <div>
+          <div class="msg-bubble">
+            技能面板的设计思路：<br><br>
+            <strong>位置</strong>：从右侧滑入，宽度 320px，不遮挡对话区<br><br>
+            <strong>分两个 Tab</strong>：<br>
+            • <strong>已安装</strong> — 当前可用的技能列表，点击查看详情和触发词<br>
+            • <strong>发现</strong> — 可安装的技能市场<br><br>
+            每个技能卡片包含：图标、名称、触发词、简介、状态徽章。<br><br>
+            你现在看到的右侧面板就是效果 👉
+          </div>
+          <div class="msg-time">19:14</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Chat Input -->
+    <div class="chat-input-area">
+      <div class="input-quick-actions">
+        <button class="input-quick-action">📋 帮我整理</button>
+        <button class="input-quick-action">💡 今日小结</button>
+        <button class="input-quick-action">📊 看看用量</button>
+        <button class="input-quick-action">🔍 帮我查一下</button>
+        <button class="input-quick-action">📝 写周报</button>
+        <button class="input-quick-action">🛠 检查服务</button>
+      </div>
+      <div class="input-wrapper">
+        <textarea class="input-box" placeholder="跟 cc 说点什么..." rows="1"></textarea>
+        <button class="send-btn">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+        </button>
+      </div>
+      <div class="input-mode-bar">
+        <button class="mode-indicator" onclick="cycleMode(this)">
+          <span class="mode-dot normal"></span>
+          <span class="mode-text">普通模式</span>
+        </button>
+        <span class="input-hint">Enter 发送 · Shift+Enter 换行</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ====== RIGHT PANEL (Skills + Automations) ====== -->
+  <div class="skill-panel" id="skill-panel">
+    <div class="skill-panel-header">
+      <div class="skill-panel-title">
+        <svg class="title-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M14.7 6.3a1 1 0 000 1.4l1.6 1.6a1 1 0 001.4 0l3.77-3.77a6 6 0 01-7.94 7.94l-6.91 6.91a2.12 2.12 0 01-3-3l6.91-6.91a6 6 0 017.94-7.94l-3.76 3.76z"/></svg>
+        工具箱
+      </div>
+      <button class="skill-close-btn" onclick="toggleSkillPanel()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+
+    <div class="skill-tabs">
+      <button class="skill-tab active" onclick="switchRightTab(this, 'right-skills')">⚡ 技能</button>
+      <button class="skill-tab" onclick="switchRightTab(this, 'right-automations')">⏰ 自动化</button>
+    </div>
+
+    <!-- Tab: 技能 -->
+    <div class="skill-list" id="right-skills">
+      <div class="skill-card">
+        <div class="skill-card-header">
+          <div class="skill-icon-name">
+            <div class="skill-icon amber">📊</div>
+            <div>
+              <div class="skill-name">用量统计</div>
+              <div class="skill-trigger">/cc-usage</div>
+            </div>
+          </div>
+          <span class="skill-status-badge installed">已安装</span>
+        </div>
+        <div class="skill-desc">查看 Claude Code 的 token 用量，按日期和模型维度拆分。</div>
+        <div class="skill-tags">
+          <span class="skill-tag">数据</span>
+          <span class="skill-tag">统计</span>
+        </div>
+      </div>
+
+      <div class="skill-card">
+        <div class="skill-card-header">
+          <div class="skill-icon-name">
+            <div class="skill-icon blue">📱</div>
+            <div>
+              <div class="skill-name">MyCC 后端</div>
+              <div class="skill-trigger">/mycc</div>
+            </div>
+          </div>
+          <span class="skill-status-badge installed">已安装</span>
+        </div>
+        <div class="skill-desc">启动 mycc 小程序后端服务，支持远程访问。</div>
+        <div class="skill-tags">
+          <span class="skill-tag">服务</span>
+          <span class="skill-tag">后端</span>
+        </div>
+      </div>
+
+      <div class="skill-card">
+        <div class="skill-card-header">
+          <div class="skill-icon-name">
+            <div class="skill-icon green">📖</div>
+            <div>
+              <div class="skill-name">公众号阅读</div>
+              <div class="skill-trigger">/read-gzh</div>
+            </div>
+          </div>
+          <span class="skill-status-badge installed">已安装</span>
+        </div>
+        <div class="skill-desc">读取微信公众号文章，自动总结要点。</div>
+        <div class="skill-tags">
+          <span class="skill-tag">阅读</span>
+          <span class="skill-tag">总结</span>
+        </div>
+      </div>
+
+      <div class="skill-card">
+        <div class="skill-card-header">
+          <div class="skill-icon-name">
+            <div class="skill-icon purple">💬</div>
+            <div>
+              <div class="skill-name">飞书通知</div>
+              <div class="skill-trigger">/tell-me</div>
+            </div>
+          </div>
+          <span class="skill-status-badge installed">已安装</span>
+        </div>
+        <div class="skill-desc">总结当前对话要点并发送到飞书群。</div>
+        <div class="skill-tags">
+          <span class="skill-tag">通知</span>
+          <span class="skill-tag">飞书</span>
+        </div>
+      </div>
+
+      <div class="skill-card">
+        <div class="skill-card-header">
+          <div class="skill-icon-name">
+            <div class="skill-icon red">⏰</div>
+            <div>
+              <div class="skill-name">定时任务</div>
+              <div class="skill-trigger">/scheduler</div>
+            </div>
+          </div>
+          <span class="skill-status-badge installed">已安装</span>
+        </div>
+        <div class="skill-desc">管理自动执行的定时任务。</div>
+        <div class="skill-tags">
+          <span class="skill-tag">自动化</span>
+          <span class="skill-tag">定时</span>
+        </div>
+      </div>
+
+      <div class="skill-card" style="opacity:0.6;">
+        <div class="skill-card-header">
+          <div class="skill-icon-name">
+            <div class="skill-icon green">🌐</div>
+            <div>
+              <div class="skill-name">网页摘要</div>
+              <div class="skill-trigger">/summarize</div>
+            </div>
+          </div>
+          <span class="skill-status-badge available">可安装</span>
+        </div>
+        <div class="skill-desc">给任意 URL，自动获取内容并生成结构化摘要。</div>
+        <div class="skill-tags">
+          <span class="skill-tag">阅读</span>
+          <span class="skill-tag">网页</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Tab: 自动化 -->
+    <div class="skill-list" id="right-automations" style="display:none">
+      <div class="automation-card">
+        <div class="automation-card-header">
+          <div class="automation-name">📋 每日早报</div>
+          <div class="automation-toggle on" onclick="this.classList.toggle('on')"></div>
+        </div>
+        <div class="automation-schedule">每天 08:00</div>
+        <div class="automation-meta">
+          <div class="automation-status">
+            <span class="automation-dot active"></span>
+            运行中
+          </div>
+          <span>上次: 今天 08:00</span>
+        </div>
+      </div>
+
+      <div class="automation-card">
+        <div class="automation-card-header">
+          <div class="automation-name">📊 周报生成</div>
+          <div class="automation-toggle on" onclick="this.classList.toggle('on')"></div>
+        </div>
+        <div class="automation-schedule">每周五 18:00</div>
+        <div class="automation-meta">
+          <div class="automation-status">
+            <span class="automation-dot active"></span>
+            运行中
+          </div>
+          <span>上次: 2/14 18:00</span>
+        </div>
+      </div>
+
+      <div class="automation-card">
+        <div class="automation-card-header">
+          <div class="automation-name">🔔 VPS 健康检查</div>
+          <div class="automation-toggle on" onclick="this.classList.toggle('on')"></div>
+        </div>
+        <div class="automation-schedule">每 30 分钟</div>
+        <div class="automation-meta">
+          <div class="automation-status">
+            <span class="automation-dot active"></span>
+            运行中
+          </div>
+          <span>上次: 19:30</span>
+        </div>
+      </div>
+
+      <div class="automation-card">
+        <div class="automation-card-header">
+          <div class="automation-name">📰 Hacker News 摘要</div>
+          <div class="automation-toggle" onclick="this.classList.toggle('on')"></div>
+        </div>
+        <div class="automation-schedule">每天 12:00</div>
+        <div class="automation-meta">
+          <div class="automation-status">
+            <span class="automation-dot paused"></span>
+            已暂停
+          </div>
+          <span>上次: 2/18 12:00</span>
+        </div>
+      </div>
+
+      <div class="automation-card">
+        <div class="automation-card-header">
+          <div class="automation-name">💾 Obsidian 同步</div>
+          <div class="automation-toggle on" onclick="this.classList.toggle('on')"></div>
+        </div>
+        <div class="automation-schedule">每 6 小时</div>
+        <div class="automation-meta">
+          <div class="automation-status">
+            <span class="automation-dot error"></span>
+            <span style="color:var(--error)">上次失败</span>
+          </div>
+          <span>上次: 18:00</span>
+        </div>
+      </div>
+
+      <button class="add-automation-btn">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        新建自动化任务
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- ====== SETTINGS MODAL ====== -->
+<div class="settings-overlay" id="settings-overlay" onclick="if(event.target===this)toggleSettings()">
+  <div class="settings-panel">
+    <div class="settings-header">
+      <div class="settings-title">设置</div>
+      <button class="skill-close-btn" onclick="toggleSettings()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+    <div class="settings-body">
+      <div class="settings-section">
+        <div class="settings-section-title">个人信息</div>
+        <div class="setting-row">
+          <div>
+            <div class="setting-label">昵称</div>
+            <div class="setting-desc">cc 会用这个名字称呼你</div>
+          </div>
+          <input type="text" class="search-input" value="大辉哥" style="width:140px;text-align:right">
+        </div>
+        <div class="setting-row">
+          <div>
+            <div class="setting-label">头像</div>
+            <div class="setting-desc">展示在对话中的头像</div>
+          </div>
+          <div class="user-avatar" style="cursor:pointer">大</div>
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <div class="settings-section-title">对话</div>
+        <div class="setting-row">
+          <div>
+            <div class="setting-label">发送方式</div>
+            <div class="setting-desc">Enter 键的行为</div>
+          </div>
+          <select class="setting-select">
+            <option>Enter 发送</option>
+            <option>Shift+Enter 发送</option>
+          </select>
+        </div>
+        <div class="setting-row">
+          <div>
+            <div class="setting-label">显示工具调用</div>
+            <div class="setting-desc">在对话中展示 cc 的操作过程</div>
+          </div>
+          <div class="toggle on" onclick="this.classList.toggle('on')"></div>
+        </div>
+        <div class="setting-row">
+          <div>
+            <div class="setting-label">自动展开思考</div>
+            <div class="setting-desc">默认展开 cc 的推理过程</div>
+          </div>
+          <div class="toggle" onclick="this.classList.toggle('on')"></div>
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <div class="settings-section-title">外观</div>
+        <div class="setting-row">
+          <div>
+            <div class="setting-label">主题</div>
+            <div class="setting-desc">深色 / 浅色模式</div>
+          </div>
+          <select class="setting-select" onchange="document.documentElement.dataset.theme=this.value">
+            <option value="dark">深色</option>
+            <option value="light">浅色</option>
+          </select>
+        </div>
+        <div class="setting-row">
+          <div>
+            <div class="setting-label">字号</div>
+            <div class="setting-desc">消息文字大小</div>
+          </div>
+          <select class="setting-select">
+            <option>小</option>
+            <option selected>中</option>
+            <option>大</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <div class="settings-section-title">关于</div>
+        <div class="setting-row">
+          <div>
+            <div class="setting-label">版本</div>
+            <div class="setting-desc">MyCC Web React</div>
+          </div>
+          <span style="font-size:13px;color:var(--text-muted);font-family:var(--font-mono)">v0.2.0</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Design Notes (prototype-only element) -->
+<div class="design-notes" id="design-notes">
+  <span class="design-notes-label">PROTOTYPE</span>
+  <span>点击右侧按钮切换不同状态</span>
+  <div class="design-notes-btns">
+    <button class="dn-btn active" onclick="toggleTheme()">切换主题</button>
+    <button class="dn-btn" onclick="toggleSkillPanel()">技能面板</button>
+    <button class="dn-btn" onclick="toggleSettings()">设置</button>
+    <button class="dn-btn" onclick="document.getElementById('design-notes').style.display='none'">关闭</button>
+  </div>
+</div>
+
+<script>
+// Theme Toggle
+function toggleTheme() {
+  const html = document.documentElement;
+  const current = html.dataset.theme;
+  html.dataset.theme = current === 'dark' ? 'light' : 'dark';
+  document.getElementById('theme-icon-light').style.display = html.dataset.theme === 'dark' ? 'none' : 'block';
+  document.getElementById('theme-icon-dark').style.display = html.dataset.theme === 'dark' ? 'block' : 'none';
+}
+
+// Skill Panel Toggle
+function toggleSkillPanel() {
+  const panel = document.getElementById('skill-panel');
+  const btn = document.getElementById('skill-toggle-btn');
+  panel.classList.toggle('hidden');
+  btn.classList.toggle('active');
+}
+
+// Settings Toggle
+function toggleSettings() {
+  document.getElementById('settings-overlay').classList.toggle('open');
+}
+
+// Sidebar (mobile)
+function openSidebar() {
+  document.getElementById('sidebar').classList.add('open');
+  document.getElementById('sidebar-overlay').classList.add('open');
+}
+function closeSidebar() {
+  document.getElementById('sidebar').classList.remove('open');
+  document.getElementById('sidebar-overlay').classList.remove('open');
+}
+
+// Tab Switching (right panel - skills/automations)
+function switchRightTab(btn, tabId) {
+  document.querySelectorAll('.skill-tab').forEach(t => t.classList.remove('active'));
+  btn.classList.add('active');
+  document.querySelectorAll('#skill-panel .skill-list').forEach(c => c.style.display = 'none');
+  document.getElementById(tabId).style.display = '';
+}
+
+// Permission Mode Cycling
+const modes = [
+  { dot: 'normal', text: '普通模式' },
+  { dot: 'plan', text: '计划模式' },
+  { dot: 'normal', text: '接受编辑' },
+];
+let modeIndex = 0;
+function cycleMode(el) {
+  modeIndex = (modeIndex + 1) % modes.length;
+  el.querySelector('.mode-dot').className = 'mode-dot ' + modes[modeIndex].dot;
+  el.querySelector('.mode-text').textContent = modes[modeIndex].text;
+}
+
+// Auto-resize textarea
+document.querySelector('.input-box').addEventListener('input', function() {
+  this.style.height = 'auto';
+  this.style.height = Math.min(this.scrollHeight, 160) + 'px';
+});
+
+// Scroll to bottom on load
+setTimeout(() => {
+  const container = document.getElementById('chat-messages');
+  container.scrollTop = container.scrollHeight;
+}, 100);
+</script>
+
+</body>
+</html>
