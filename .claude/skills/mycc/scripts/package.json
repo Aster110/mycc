@@ -1,6 +1,6 @@
 {
   "name": "cc-miniprogram",
-  "version": "0.4.5",
+  "version": "0.5.1",
   "type": "module",
   "description": "Claude Code 微信小程序本地后端",
   "main": "dist/index.js",
@@ -11,6 +11,7 @@
     "build": "npx tsc",
     "dev": "npx tsx src/index.ts",
     "start": "node dist/index.js",
+    "postinstall": "node scripts/patch-sdk.mjs",
     "test": "vitest run",
     "test:watch": "vitest"
   },
@@ -23,23 +24,17 @@
   "author": "aster",
   "license": "MIT",
   "dependencies": {
-    "@anthropic-ai/claude-code": "^1.0.108",
-    "bcrypt": "^5.1.1",
+    "@anthropic-ai/claude-agent-sdk": "^0.2.0",
+    "@larksuiteoapi/node-sdk": "^1.59.0",
     "chalk": "^4.1.2",
-    "dotenv": "^16.4.5",
-    "jsonwebtoken": "^9.0.2",
     "nanoid": "^5.0.0",
-    "pg": "^8.11.3",
     "qrcode-terminal": "^0.12.0",
     "undici": "^7.19.1",
-    "ws": "^8.16.0"
+    "zod": "^4.0.0"
   },
   "devDependencies": {
-    "@types/bcrypt": "^5.0.2",
-    "@types/jsonwebtoken": "^9.0.6",
     "@types/node": "^20.0.0",
-    "@types/pg": "^8.11.2",
-    "@types/ws": "^8.5.0",
+    "@vitest/coverage-v8": "^2.1.9",
     "tsx": "^4.0.0",
     "typescript": "^5.0.0",
     "vitest": "^2.0.0"

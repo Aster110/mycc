@@ -1,111 +1,99 @@
 /**
  * HTTP 服务器
- * 支持单用户模式（pairCode）和多用户模式（JWT）
+ * 提供 REST API 供小程序调用
  */
 
 import http from "http";
-import { readFileSync } from "fs";
+import https from "https";
+import os from "os";
 import { join } from "path";
+import { readFileSync, existsSync } from "fs";
 import { generateToken } from "./utils.js";
 import { adapter } from "./adapters/index.js";
 import type { PairState } from "./types.js";
 import { validateImages, type ImageData } from "./image-utils.js";
 import { renameSession } from "./history.js";
-import { verifyToken, register, login, getCurrentUser, type JWTPayload } from "./auth/service.js";
-import { checkQuota } from "./db/client.js";
-import { concurrencyLimiter } from "./concurrency-limiter.js";
+import { listSkills } from "./skills.js";
+import { ChannelManager, WebChannel, FeishuChannel } from "./channels/index.js";
+import { loadConfig } from "./config.js";
+import type { DeviceConfig } from "./types.js";
 
-const PORT = process.env.PORT || 8080;
+const PORT = process.env.PORT || 18080;
 
-export type ServerMode = "single-user" | "multi-user";
+export interface TlsConfig {
+  certPath: string;
+  keyPath: string;
+}
+
+// 配对速率限制：每 IP 5 次失败后锁定 5 分钟
+const PAIR_MAX_ATTEMPTS = 5;
+const PAIR_LOCK_MS = 5 * 60 * 1000;
+const pairAttempts = new Map<string, { count: number; lockedUntil: number }>();
+
+/** 测试用：重置速率限制状态 */
+export function _resetPairAttempts() { pairAttempts.clear(); }
 
 export class HttpServer {
-  private server: http.Server;
-  private mode: ServerMode;
-
-  // 单用户模式字段
-  private state?: PairState;
-  private cwd?: string;
+  private server: http.Server | https.Server;
+  private state: PairState;
+  private cwd: string;
   private onPaired?: (token: string) => void;
+  private isTls: boolean;
+  private channelManager: ChannelManager;
+  private currentSessionId: string | null = null; // 保存当前活跃会话 ID
+  private feishuChannel: FeishuChannel | null = null; // 保存飞书通道实例
 
-  constructor(options: { mode: "multi-user" } | { mode?: "single-user"; pairCode: string; cwd: string; authToken?: string }) {
-    if ("pairCode" in options) {
-      // 单用户模式（兼容原有逻辑）
-      this.mode = "single-user";
-      this.cwd = options.cwd;
-      this.state = {
-        pairCode: options.pairCode,
-        paired: !!options.authToken,
-        token: options.authToken || null,
-      };
+  constructor(pairCode: string, cwd: string, authToken?: string, tls?: TlsConfig) {
+    this.cwd = cwd;
+    // 如果传入了 authToken，说明之前已配对过
+    this.state = {
+      pairCode,
+      paired: !!authToken,
+      token: authToken || null,
+    };
+
+    // 初始化通道管理器
+    this.channelManager = new ChannelManager();
+
+    // 注册飞书通道（如果配置了环境变量）
+    if (process.env.FEISHU_APP_ID && process.env.FEISHU_APP_SECRET) {
+      this.feishuChannel = new FeishuChannel();
+      // 设置飞书消息回调
+      this.feishuChannel.onMessage(async (message: string, images?: Array<{ data: string; mediaType: string }>) => {
+        await this.processFeishuMessage(message, images);
+      });
+      this.channelManager.register(this.feishuChannel);
+      console.log("[Channels] 飞书通道已注册（启动时将激活）");
     } else {
-      // 多用户模式
-      this.mode = "multi-user";
+      console.log("[Channels] 飞书通道未配置（设置 FEISHU_APP_ID 和 FEISHU_APP_SECRET 环境变量以启用）");
     }
 
-    this.server = http.createServer((req, res) => {
+    const handler = (req: http.IncomingMessage, res: http.ServerResponse) => {
       this.handleRequest(req, res);
-    });
+    };
+
+    // 如果提供了 TLS 证书，使用 HTTPS
+    if (tls && existsSync(tls.certPath) && existsSync(tls.keyPath)) {
+      this.server = https.createServer({
+        cert: readFileSync(tls.certPath),
+        key: readFileSync(tls.keyPath),
+      }, handler);
+      this.isTls = true;
+    } else {
+      this.server = http.createServer(handler);
+      this.isTls = false;
+    }
   }
 
-  /** 设置配对成功回调（单用户模式） */
+  /** 设置配对成功回调（用于持久化 authToken） */
   setOnPaired(callback: (token: string) => void) {
     this.onPaired = callback;
   }
 
-  /** 获取当前 authToken（单用户模式） */
+  /** 获取当前 authToken */
   getAuthToken(): string | null {
-    return this.state?.token || null;
+    return this.state.token;
   }
-
-  // ============ JWT 认证（多用户模式） ============
-
-  private getUserFromToken(req: http.IncomingMessage): JWTPayload | null {
-    const authHeader = req.headers.authorization;
-    const token = authHeader?.replace("Bearer ", "");
-    if (!token) return null;
-
-    try {
-      return verifyToken(token);
-    } catch {
-      return null;
-    }
-  }
-
-  private getUserCwd(linuxUser: string): string {
-    const isDev = process.env.NODE_ENV === "development";
-    return isDev
-      ? `/tmp/mycc_dev/${linuxUser}/workspace`
-      : `/home/${linuxUser}/workspace`;
-  }
-
-  // ============ 认证检查（根据模式） ============
-
-  /** 验证请求认证，返回 cwd。失败返回 null 并写入 401 响应 */
-  private authenticateRequest(req: http.IncomingMessage, res: http.ServerResponse): { cwd: string; userId?: number } | null {
-    if (this.mode === "single-user") {
-      const authHeader = req.headers.authorization;
-      const token = authHeader?.replace("Bearer ", "");
-
-      if (!this.state?.paired || token !== this.state.token) {
-        res.writeHead(401, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: "未授权" }));
-        return null;
-      }
-      return { cwd: this.cwd! };
-    } else {
-      // 多用户模式
-      const user = this.getUserFromToken(req);
-      if (!user) {
-        res.writeHead(401, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ code: 401, message: "未授权，请登录" }));
-        return null;
-      }
-      return { cwd: this.getUserCwd(user.linuxUser), userId: user.userId };
-    }
-  }
-
-  // ============ 路由分发 ============
 
   private async handleRequest(req: http.IncomingMessage, res: http.ServerResponse) {
     // CORS
@@ -122,66 +110,20 @@ export class HttpServer {
     const url = new URL(req.url || "/", `http://localhost:${PORT}`);
 
     try {
-      // 公开路由（不需要认证）
       if (url.pathname === "/health" && req.method === "GET") {
         this.handleHealth(res);
-        return;
-      }
-
-      // 单用户模式：配对路由
-      if (this.mode === "single-user" && url.pathname === "/pair" && req.method === "POST") {
+      } else if (url.pathname === "/pair" && req.method === "POST") {
         await this.handlePair(req, res);
-        return;
-      }
-
-      // 多用户模式：认证路由
-      if (this.mode === "multi-user") {
-        if (url.pathname === "/api/auth/register" && req.method === "POST") {
-          await this.handleRegister(req, res);
-          return;
-        }
-        if (url.pathname === "/api/auth/login" && req.method === "POST") {
-          await this.handleLogin(req, res);
-          return;
-        }
-        if (url.pathname === "/api/auth/me" && req.method === "GET") {
-          await this.handleMe(req, res);
-          return;
-        }
-        if (url.pathname === "/api/billing/subscription" && req.method === "GET") {
-          await this.handleBillingSubscription(req, res);
-          return;
-        }
-        if (url.pathname === "/api/billing/usage" && req.method === "GET") {
-          await this.handleBillingUsage(req, res);
-          return;
-        }
-        if (url.pathname === "/api/billing/upgrade" && req.method === "POST") {
-          await this.handleBillingUpgrade(req, res);
-          return;
-        }
-      }
-
-      // 静态资源路由（不需要认证）
-      if (url.pathname.startsWith('/assets/')) {
-        this.handleStatic(req, res, url.pathname);
-        return;
-      }
-
-      // 需要认证的路由
-      if (url.pathname === "/api/chat" && req.method === "POST") {
+      } else if (url.pathname === "/chat" && req.method === "POST") {
         await this.handleChat(req, res);
-      } else if (url.pathname === "/api/projects" && req.method === "GET") {
-        await this.handleProjects(req, res);
-      } else if (url.pathname.match(/^\/api\/projects\/[^/]+\/histories$/) && req.method === "GET") {
+      } else if (url.pathname === "/history/list" && req.method === "GET") {
         await this.handleHistoryList(req, res);
-      } else if (url.pathname.match(/^\/api\/projects\/[^/]+\/histories\/[^/]+$/) && req.method === "GET") {
+      } else if (url.pathname.startsWith("/history/") && req.method === "GET") {
         await this.handleHistoryDetail(req, res, url.pathname);
-      } else if (url.pathname === "/api/chat/rename" && req.method === "POST") {
+      } else if (url.pathname === "/chat/rename" && req.method === "POST") {
         await this.handleRename(req, res);
-      } else if (url.pathname === "/" && req.method === "GET") {
-        // Serve 前端页面
-        this.handleIndex(res);
+      } else if (url.pathname === "/skills/list" && req.method === "GET") {
+        await this.handleSkillsList(req, res, url);
       } else {
         res.writeHead(404, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: "Not Found" }));
@@ -193,78 +135,68 @@ export class HttpServer {
     }
   }
 
-  /** Serve 前端页面 */
-  private handleIndex(res: http.ServerResponse) {
-    try {
-      // 从 scripts/src/ 到 mycc-web-react/dist/
-      const indexPath = join(import.meta.dirname, '..', '..', '..', '..', '..', 'mycc-web-react', 'dist', 'index.html');
-      const html = readFileSync(indexPath, 'utf-8');
-      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-      res.end(html);
-    } catch {
-      res.writeHead(404, { "Content-Type": "text/plain" });
-      res.end("Frontend not found");
-    }
-  }
-
-  /** Serve 静态资源 */
-  private handleStatic(req: http.IncomingMessage, res: http.ServerResponse, pathname: string) {
-    try {
-      const staticPath = join(import.meta.dirname, '..', '..', '..', '..', '..', 'mycc-web-react', 'dist', pathname);
-      const content = readFileSync(staticPath);
-      const ext = pathname.split('.').pop();
-      const contentType = {
-        'js': 'application/javascript',
-        'css': 'text/css',
-        'png': 'image/png',
-        'jpg': 'image/jpeg',
-        'svg': 'image/svg+xml',
-      }[ext || ''] || 'application/octet-stream';
-      res.writeHead(200, { 'Content-Type': contentType });
-      res.end(content);
-    } catch {
-      res.writeHead(404);
-      res.end();
-    }
-  }
-
-  // ============ 公开路由 ============
-
   private handleHealth(res: http.ServerResponse) {
     res.writeHead(200, { "Content-Type": "application/json" });
-    if (this.mode === "single-user") {
-      res.end(JSON.stringify({ status: "ok", paired: this.state?.paired }));
-    } else {
-      res.end(JSON.stringify({ status: "ok", mode: "multi-user" }));
-    }
+    res.end(JSON.stringify({ status: "ok", paired: this.state.paired, hostname: os.hostname() }));
   }
 
-  // ============ 单用户模式路由 ============
-
   private async handlePair(req: http.IncomingMessage, res: http.ServerResponse) {
-    const body = await this.readBody(req);
-    const { pairCode } = JSON.parse(body);
+    // 速率限制检查
+    const ip = req.headers["x-forwarded-for"]?.toString().split(",")[0]?.trim() || req.socket.remoteAddress || "unknown";
+    const record = pairAttempts.get(ip);
+    if (record && Date.now() < record.lockedUntil) {
+      const waitSec = Math.ceil((record.lockedUntil - Date.now()) / 1000);
+      console.log(`[Pair] IP ${ip} 被锁定，剩余 ${waitSec}s`);
+      res.writeHead(429, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: `请求过于频繁，请 ${waitSec} 秒后重试` }));
+      return;
+    }
 
-    if (pairCode !== this.state!.pairCode) {
+    const body = await this.readBody(req);
+    let parsed;
+    try {
+      parsed = JSON.parse(body);
+    } catch {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Invalid JSON" }));
+      return;
+    }
+    const { pairCode } = parsed;
+
+    if (pairCode !== this.state.pairCode) {
+      // 记录失败次数
+      const attempts = record || { count: 0, lockedUntil: 0 };
+      attempts.count++;
+      if (attempts.count >= PAIR_MAX_ATTEMPTS) {
+        attempts.lockedUntil = Date.now() + PAIR_LOCK_MS;
+        attempts.count = 0;
+        console.log(`[Pair] IP ${ip} 失败 ${PAIR_MAX_ATTEMPTS} 次，锁定 5 分钟`);
+      }
+      pairAttempts.set(ip, attempts);
+
+      console.log(`[Pair] 配对失败: 配对码错误 (${attempts.count}/${PAIR_MAX_ATTEMPTS})`);
       res.writeHead(401, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: "配对码错误" }));
       return;
     }
 
+    // 配对成功，清除该 IP 的失败记录
+    pairAttempts.delete(ip);
+
     // 如果已配对，返回相同 token（不覆盖）
-    if (this.state!.paired && this.state!.token) {
-      console.log("[HTTP] 已配对，返回现有 token");
+    if (this.state.paired && this.state.token) {
+      console.log("[Pair] 重复配对，返回现有 token");
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ success: true, token: this.state!.token }));
+      res.end(JSON.stringify({ success: true, token: this.state.token }));
       return;
     }
 
     // 首次配对，生成 token
     const token = generateToken();
-    this.state!.paired = true;
-    this.state!.token = token;
+    this.state.paired = true;
+    this.state.token = token;
 
-    console.log("[HTTP] 配对成功!");
+    console.log("[Pair] 首次配对成功");
 
     // 通知外部保存 authToken
     if (this.onPaired) {
@@ -275,219 +207,36 @@ export class HttpServer {
     res.end(JSON.stringify({ success: true, token }));
   }
 
-  // ============ 多用户模式路由：认证 ============
-
-  private async handleRegister(req: http.IncomingMessage, res: http.ServerResponse) {
-    try {
-      const body = await this.readBody(req);
-      const { phone, email, password, nickname } = JSON.parse(body);
-
-      const result = await register({ phone, email, password, nickname });
-
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ code: 0, data: result }));
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "注册失败";
-      res.writeHead(400, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ code: 400, message }));
-    }
-  }
-
-  private async handleLogin(req: http.IncomingMessage, res: http.ServerResponse) {
-    try {
-      const body = await this.readBody(req);
-      const { phone, email, credential, password } = JSON.parse(body);
-
-      // 兼容 phone / email / credential 三种字段
-      const loginCredential = credential || phone || email;
-      if (!loginCredential) {
-        res.writeHead(400, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ code: 400, message: "请提供手机号或邮箱" }));
-        return;
-      }
-
-      const result = await login({ credential: loginCredential, password });
-
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ code: 0, data: result }));
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "登录失败";
-      res.writeHead(401, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ code: 401, message }));
-    }
-  }
-
-  private async handleMe(req: http.IncomingMessage, res: http.ServerResponse) {
-    const user = this.getUserFromToken(req);
-    if (!user) {
-      res.writeHead(401, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ code: 401, message: "未授权" }));
-      return;
-    }
-
-    try {
-      const userInfo = await getCurrentUser(user.userId);
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ code: 0, data: userInfo }));
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "获取用户信息失败";
-      res.writeHead(500, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ code: 500, message }));
-    }
-  }
-
-  // ============ 多用户模式路由：计费 ============
-
-  private async handleBillingSubscription(req: http.IncomingMessage, res: http.ServerResponse) {
-    const user = this.getUserFromToken(req);
-    if (!user) {
-      res.writeHead(401, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ code: 401, message: "未授权" }));
-      return;
-    }
-
-    try {
-      const userInfo = await getCurrentUser(user.userId);
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ code: 0, data: userInfo.subscription }));
-    } catch (error) {
-      res.writeHead(500, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ code: 500, message: "获取订阅信息失败" }));
-    }
-  }
-
-  private async handleBillingUsage(req: http.IncomingMessage, res: http.ServerResponse) {
-    const user = this.getUserFromToken(req);
-    if (!user) {
-      res.writeHead(401, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ code: 401, message: "未授权" }));
-      return;
-    }
-
-    try {
-      const { getUsageStats } = await import("./db/client.js");
-      const stats = await getUsageStats(user.userId);
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ code: 0, data: stats }));
-    } catch (error) {
-      res.writeHead(500, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ code: 500, message: "获取使用记录失败" }));
-    }
-  }
-
-  private async handleBillingUpgrade(req: http.IncomingMessage, res: http.ServerResponse) {
-    const user = this.getUserFromToken(req);
-    if (!user) {
-      res.writeHead(401, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ code: 401, message: "未授权" }));
-      return;
-    }
-
-    try {
-      const body = await this.readBody(req);
-      const { plan } = JSON.parse(body);
-
-      // 验证套餐类型
-      if (!['basic', 'pro'].includes(plan)) {
-        res.writeHead(400, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ code: 400, message: "无效的套餐类型" }));
-        return;
-      }
-
-      // 获取当前订阅信息
-      const userInfo = await getCurrentUser(user.userId);
-      if (!userInfo.subscription) {
-        res.writeHead(500, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ code: 500, message: "用户订阅信息不存在" }));
-        return;
-      }
-      const currentPlan = userInfo.subscription.plan;
-
-      // 检查是否降级（不允许）
-      const planOrder: Record<string, number> = { free: 0, basic: 1, pro: 2 };
-      if (planOrder[plan] <= planOrder[currentPlan]) {
-        res.writeHead(400, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ code: 400, message: "不支持降级或重复升级" }));
-        return;
-      }
-
-      // 执行升级
-      const { upgradePlan } = await import("./db/client.js");
-      await upgradePlan(user.userId, plan);
-
-      // 获取新的订阅信息
-      const newUserInfo = await getCurrentUser(user.userId);
-      if (!newUserInfo.subscription) {
-        res.writeHead(500, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ code: 500, message: "升级后订阅信息不存在" }));
-        return;
-      }
-
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({
-        code: 0,
-        data: {
-          plan: newUserInfo.subscription.plan,
-          tokens_limit: newUserInfo.subscription.tokens_limit,
-          expires_at: newUserInfo.subscription.expires_at,
-        }
-      }));
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "升级套餐失败";
-      res.writeHead(500, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ code: 500, message }));
-    }
-  }
-
-  // ============ 需要认证的路由 ============
-
   private async handleChat(req: http.IncomingMessage, res: http.ServerResponse) {
-    const auth = this.authenticateRequest(req, res);
-    if (!auth) return;
+    // 验证 token
+    const authHeader = req.headers.authorization;
+    const token = authHeader?.replace("Bearer ", "");
 
-    // 多用户模式：检查额度和并发
-    if (this.mode === "multi-user" && auth.userId) {
-      // 检查额度
-      const quota = await checkQuota(auth.userId);
-      if (!quota.allowed) {
-        res.writeHead(403, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ code: 403, message: "额度已用完，请升级套餐" }));
-        return;
-      }
-
-      // 并发控制（非阻塞检查，如果已有对话在进行则拒绝）
-      try {
-        // 使用 Promise.race 实现超时检查
-        const acquired = await Promise.race([
-          concurrencyLimiter.acquire(auth.userId).then(() => true),
-          new Promise<false>((resolve) => setTimeout(() => resolve(false), 100)),
-        ]);
-
-        if (!acquired) {
-          res.writeHead(429, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ code: 429, message: "您有正在进行的对话，请稍后再试" }));
-          return;
-        }
-      } catch {
-        res.writeHead(429, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ code: 429, message: "服务繁忙，请稍后再试" }));
-        return;
-      }
+    if (!this.state.paired || token !== this.state.token) {
+      res.writeHead(401, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "未授权" }));
+      return;
     }
 
     const body = await this.readBody(req);
-    const { message, sessionId, images } = JSON.parse(body) as {
+    let parsed;
+    try {
+      parsed = JSON.parse(body);
+    } catch {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Invalid JSON" }));
+      return;
+    }
+    const { message, sessionId, images, model } = parsed as {
       message: string;
       sessionId?: string;
       images?: ImageData[];
+      model?: string;
     };
 
     // 校验图片
     const imageValidation = validateImages(images);
     if (!imageValidation.valid) {
-      if (this.mode === "multi-user" && auth.userId) {
-        concurrencyLimiter.release(auth.userId);
-      }
       res.writeHead(imageValidation.code || 400, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: imageValidation.error }));
       return;
@@ -503,69 +252,567 @@ export class HttpServer {
       "Connection": "keep-alive",
     });
 
+    // 创建 Web 通道
+    const webChannel = new WebChannel({ res });
+    // 注册 Web 通道（使用唯一 ID，因为每个请求都有独立的响应）
+    const webChannelId = `web-${Date.now()}-${Math.random()}`;
+    Object.defineProperty(webChannel, 'id', { value: webChannelId, writable: false });
+    this.channelManager.register(webChannel);
+
     let currentSessionId = sessionId;
 
     try {
       // 使用 adapter 的 chat 方法（返回 AsyncIterable）
-      for await (const data of adapter.chat({ message, sessionId, cwd: auth.cwd, images })) {
+      for await (const data of adapter.chat({ message, sessionId, cwd: this.cwd, images, model: model || undefined })) {
         // 提取 session_id
         if (data && typeof data === "object" && "type" in data) {
           if (data.type === "system" && "session_id" in data) {
             currentSessionId = data.session_id as string;
+            // 保存到全局变量，供飞书通道复用
+            this.currentSessionId = currentSessionId;
+            webChannel.setSessionId(currentSessionId);
           }
         }
-        res.write(`data: ${JSON.stringify(data)}\n\n`);
+
+        // 只发送到 Web 通道，不广播到飞书
+        await webChannel.send(data);
       }
 
-      // 完成
-      res.write(`data: ${JSON.stringify({ type: "done", sessionId: currentSessionId })}\n\n`);
+      // 完成 - 发送完成事件到 Web 通道
+      await webChannel.send({ type: "done", sessionId: currentSessionId } as any);
+
+      // 注销 Web 通道
+      this.channelManager.unregister(webChannelId);
+
+      // 结束 SSE 响应
       res.end();
       console.log(`[CC] 完成`);
     } catch (error) {
       const errMsg = error instanceof Error ? error.message : String(error);
-      res.write(`data: ${JSON.stringify({ type: "error", error: errMsg })}\n\n`);
+
+      // 只发送错误到 Web 通道，不广播到飞书
+      try {
+        await webChannel.send({ type: "error", error: errMsg } as any);
+      } catch {
+        // 忽略发送错误
+      }
+
+      // 确保注销 Web 通道
+      this.channelManager.unregister(webChannelId);
+
       res.end();
       console.error(`[CC] 错误: ${errMsg}`);
+    }
+  }
+
+  /**
+   * 处理飞书收到的消息
+   * 由飞书通道的 WebSocket 回调调用
+   *
+   * 支持命令系统和普通对话：
+   * - 命令以 / 开头，如 /new, /sessions, /switch, /help
+   * - 普通消息会使用当前活跃会话（如果有）
+   */
+  private async processFeishuMessage(message: string, images?: Array<{ data: string; mediaType: string }>): Promise<void> {
+    console.log(`[CC] 收到飞书消息: ${message.substring(0, 50)}...${images ? ` [${images.length} 张图片]` : ""}`);
+
+    const trimmedMessage = message.trim();
+
+    // 检查是否是命令
+    if (trimmedMessage.startsWith("/")) {
+      await this.handleFeishuCommand(trimmedMessage);
+      return;
+    }
+
+    // 普通对话：检查是否有活跃会话
+    if (!this.currentSessionId) {
+      console.log(`[CC] 无活跃会话，尝试自动选择最近的历史会话`);
+
+      // 尝试获取历史会话
+      try {
+        const result = await adapter.listHistory(this.cwd, 1);
+        if (result.conversations.length > 0) {
+          // 自动选择最近的一个会话
+          const latestSession = result.conversations[0];
+          this.currentSessionId = latestSession.sessionId;
+
+          const title = latestSession.customTitle || latestSession.firstPrompt?.substring(0, 30) || "历史会话";
+          const timeAgo = this.formatTimeAgo(latestSession.lastTime || latestSession.modified || Date.now());
+
+          console.log(`[CC] 自动选择会话: ${this.currentSessionId} (${title})`);
+
+          // 通知用户已自动选择会话
+          await this.sendToFeishu(`✅ 自动使用最近的会话：${title}\n🕒 ${timeAgo}\n\n继续你的对话...`);
+        } else {
+          // 没有任何历史会话，显示帮助信息
+          console.log(`[CC] 没有历史会话，显示帮助信息`);
+          const hintMessage = "💡 还没有会话记录。\n\n" +
+                             "• 发送任意消息开始新对话\n" +
+                             "• 发送 /help 查看所有命令";
+          await this.sendToFeishu(hintMessage);
+          return;
+        }
+      } catch (err) {
+        console.error(`[CC] 获取历史会话失败:`, err);
+        await this.sendToFeishu("❌ 无法加载历史会话，请重试或发送 /new 创建新会话。");
+        return;
+      }
+    }
+
+    console.log(`[CC] 使用当前会话: ${this.currentSessionId}`);
+
+    try {
+      // 使用 adapter 处理消息（流式发送，不累积）
+      for await (const data of adapter.chat({
+        message: trimmedMessage,
+        sessionId: this.currentSessionId,
+        cwd: this.cwd,
+        images: images,
+      })) {
+        // 更新 session_id（如果返回了新的）
+        if (data && typeof data === "object") {
+          if (data.type === "system" && "session_id" in data) {
+            this.currentSessionId = data.session_id as string;
+            console.log(`[CC] 会话已更新: ${this.currentSessionId}`);
+          }
+          // v1 SDK: text 事件 - 立即发送文本
+          if (data.type === "text" && data.text) {
+            const text = String(data.text);
+            console.log(`[CC] 发送文本: ${text.substring(0, 30)}...`);
+            await this.sendToFeishu(text);
+          }
+          // v2 SDK: assistant 事件 - 按 content 数组顺序逐条发送
+          else if (data.type === "assistant") {
+            const assistantEvent = data as any;
+            if (assistantEvent.message?.content) {
+              for (const block of assistantEvent.message.content) {
+                if (block.type === "text" && block.text) {
+                  // 立即发送文本
+                  const text = String(block.text);
+                  console.log(`[CC] 发送文本: ${text.substring(0, 30)}...`);
+                  await this.sendToFeishu(text);
+                } else if (block.type === "tool_use") {
+                  // 立即发送工具调用
+                  const name = block.name || "unknown";
+                  let toolCallText = `🔧 **使用工具: ${name}**`;
+                  if (block.input && Object.keys(block.input).length > 0) {
+                    const inputStr = JSON.stringify(block.input, null, 2);
+                    if (inputStr.length > 300) {
+                      toolCallText += `\n\`\`\`\n${inputStr.substring(0, 300)}...\n\`\`\``;
+                    } else {
+                      toolCallText += `\n\`\`\`\n${inputStr}\n\`\`\``;
+                    }
+                  }
+                  console.log(`[CC] 发送工具调用: ${name}`);
+                  await this.sendToFeishu(toolCallText);
+                }
+              }
+            }
+          }
+        }
+      }
+    } catch (err) {
+      console.error(`[CC] 处理飞书消息错误:`, err);
+      await this.sendToFeishu("❌ 处理消息时出错，请重试。");
     } finally {
-      // 多用户模式：释放并发许可
-      if (this.mode === "multi-user" && auth.userId) {
-        concurrencyLimiter.release(auth.userId);
+      // 任务完成后删除"正在输入"表态
+      if (this.feishuChannel) {
+        await this.feishuChannel.clearTypingIndicator();
       }
     }
   }
 
-  private async handleProjects(req: http.IncomingMessage, res: http.ServerResponse) {
-    const auth = this.authenticateRequest(req, res);
-    if (!auth) return;
+  /**
+   * 处理飞书命令
+   */
+  private async handleFeishuCommand(command: string): Promise<void> {
+    const parts = command.split(/\s+/);
+    const cmd = parts[0].toLowerCase();
+    const args = parts.slice(1);
+
+    console.log(`[CC] 处理飞书命令: ${cmd}`);
 
     try {
-      // 多用户模式：返回用户的工作目录作为项目
-      // 单用户模式：返回当前工作目录
-      const projectPath = auth.cwd;
-      console.log(`[Projects] Original path: ${projectPath}`);
+      switch (cmd) {
+        case "/new":
+        case "/create":
+          await this.handleNewSession(args.join(" "));
+          break;
 
-      // 使用和 Claude Code SDK 一致的编码方式
-      const { encodeProjectPath } = await import("./history.js");
-      const encodedName = encodeProjectPath(projectPath);
-      console.log(`[Projects] Encoded name: ${encodedName}`);
+        case "/sessions":
+        case "/list":
+        case "/history":
+          await this.handleListSessions();
+          break;
 
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({
-        projects: [{
-          path: projectPath,
-          encodedName: encodedName
-        }]
-      }));
-    } catch (error) {
-      console.error("[Projects] Error:", error);
-      res.writeHead(500, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "获取项目列表失败" }));
+        case "/switch":
+          await this.handleSwitchSession(args[0]);
+          break;
+
+        case "/current":
+          await this.handleCurrentSession();
+          break;
+
+        case "/device":
+        case "/devices":
+          await this.handleDevice();
+          break;
+
+        case "/help":
+        case "/?":
+          await this.handleHelp();
+          break;
+
+        default:
+          await this.sendToFeishu(`❓ 未知命令: ${cmd}\n\n发送 /help 查看可用命令。`);
+      }
+    } catch (err) {
+      console.error(`[CC] 命令处理错误:`, err);
+      await this.sendToFeishu(`❌ 执行命令时出错: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
+  /**
+   * 创建新会话
+   */
+  private async handleNewSession(title?: string): Promise<void> {
+    console.log(`[CC] 创建新会话${title ? `: ${title}` : ''}`);
+
+    try {
+      const replyParts: string[] = [];
+      let newSessionId: string | undefined;
+      let sessionTitle: string | undefined;
+
+      // 不传递 sessionId，让 adapter 创建新会话
+      for await (const data of adapter.chat({
+        message: title || "开始新对话",
+        cwd: this.cwd,
+      })) {
+        if (data && typeof data === "object") {
+          if (data.type === "system" && "session_id" in data) {
+            this.currentSessionId = data.session_id as string;
+            newSessionId = data.session_id as string;
+            console.log(`[CC] 新会话已创建: ${this.currentSessionId}`);
+          }
+          if (data.type === "text" && data.text) {
+            replyParts.push(String(data.text));
+          } else if (data.type === "assistant") {
+            const assistantEvent = data as any;
+            if (assistantEvent.message?.content) {
+              for (const block of assistantEvent.message.content) {
+                if (block.type === "text" && block.text) {
+                  replyParts.push(String(block.text));
+                }
+              }
+            }
+          }
+        }
+      }
+
+      // 构建会话信息响应
+      let response = "";
+      if (newSessionId) {
+        response = `✅ 新会话已创建\n\n`;
+        response += `📌 会话 ID: ${newSessionId}\n`;
+        if (title) {
+          response += `📝 标题: ${title}\n`;
+          sessionTitle = title;
+        }
+        response += `\n`;
+      }
+
+      if (replyParts.length > 0) {
+        response += replyParts.join("").trim();
+      } else if (newSessionId) {
+        response += `💡 现在发送的消息将使用此会话。`;
+      }
+
+      await this.sendToFeishu(response);
+    } catch (err) {
+      console.error(`[CC] 创建会话错误:`, err);
+      await this.sendToFeishu("❌ 创建会话失败，请重试。");
+    }
+  }
+
+  /**
+   * 列出历史会话
+   */
+  private async handleListSessions(): Promise<void> {
+    console.log(`[CC] 列出历史会话`);
+
+    try {
+      const result = await adapter.listHistory(this.cwd, 10);
+      const conversations = result.conversations;
+
+      // 调试：打印第一个会话的完整结构
+      if (conversations.length > 0) {
+        console.log(`[DEBUG] 第一个会话数据:`, JSON.stringify(conversations[0], null, 2));
+      }
+
+      if (conversations.length === 0) {
+        await this.sendToFeishu("📋 还没有历史会话。\n\n发送 /new 创建第一个会话。");
+        return;
+      }
+
+      let output = `📋 历史会话 (共 ${result.total} 个，显示最近 ${conversations.length} 个)\n\n`;
+
+      conversations.forEach((conv, index) => {
+        const isCurrent = conv.sessionId === this.currentSessionId ? " [当前]" : "";
+
+        // 尝试从多个字段获取标题
+        let title = "未命名会话";
+        if (conv.customTitle) {
+          title = conv.customTitle;
+        } else if (conv.firstPrompt) {
+          title = conv.firstPrompt.substring(0, 30);
+        } else if (conv.lastMessagePreview) {
+          title = conv.lastMessagePreview.substring(0, 30);
+        }
+
+        const timeAgo = this.formatTimeAgo(conv.lastTime || conv.modified || Date.now());
+        output += `${index + 1}. ${title}${isCurrent}\n`;
+        output += `   🕒 ${timeAgo}\n\n`;
+      });
+
+      output += `💡 使用 /switch <序号> 切换到某个会话`;
+
+      await this.sendToFeishu(output);
+    } catch (err) {
+      console.error(`[CC] 获取会话列表错误:`, err);
+      await this.sendToFeishu("❌ 获取会话列表失败，请重试。");
+    }
+  }
+
+  /**
+   * 切换到指定会话
+   */
+  private async handleSwitchSession(target: string | undefined): Promise<void> {
+    console.log(`[CC] 切换会话: ${target}`);
+
+    if (!target) {
+      await this.sendToFeishu("❓ 请指定要切换的会话序号。\n\n使用 /sessions 查看所有会话。");
+      return;
+    }
+
+    try {
+      const result = await adapter.listHistory(this.cwd, 50);
+      const conversations = result.conversations;
+
+      // 解析目标序号
+      const index = parseInt(target, 10) - 1;
+      if (isNaN(index) || index < 0 || index >= conversations.length) {
+        await this.sendToFeishu(`❓ 无效的序号: ${target}\n\n使用 /sessions 查看有效序号。`);
+        return;
+      }
+
+      const targetSession = conversations[index];
+
+      if (targetSession.sessionId === this.currentSessionId) {
+        const title = targetSession.customTitle || targetSession.firstPrompt?.substring(0, 30) || "未命名";
+        await this.sendToFeishu(`ℹ️ 已经在这个会话中了：${title}`);
+        return;
+      }
+
+      // 切换会话
+      this.currentSessionId = targetSession.sessionId;
+      const title = targetSession.customTitle || targetSession.firstPrompt?.substring(0, 30) || "未命名";
+      const timeAgo = this.formatTimeAgo(targetSession.lastTime || targetSession.modified || Date.now());
+
+      await this.sendToFeishu(
+        `✅ 已切换到会话：${title}\n\n` +
+        `🕒 最后更新: ${timeAgo}\n\n` +
+        `💡 现在发送的消息将使用这个会话。`
+      );
+    } catch (err) {
+      console.error(`[CC] 切换会话错误:`, err);
+      await this.sendToFeishu("❌ 切换会话失败，请重试。");
+    }
+  }
+
+  /**
+   * 显示当前会话信息
+   */
+  private async handleCurrentSession(): Promise<void> {
+    console.log(`[CC] 显示当前会话`);
+
+    if (!this.currentSessionId) {
+      await this.sendToFeishu("ℹ️ 当前没有活跃的会话。\n\n使用 /new 创建会话，或 /sessions 选择一个历史会话。");
+      return;
+    }
+
+    try {
+      const conversation = await adapter.getHistory(this.cwd, this.currentSessionId);
+
+      if (!conversation) {
+        await this.sendToFeishu("❌ 当前会话不存在。\n\n使用 /new 创建新会话。");
+        return;
+      }
+
+      // 从 messages 中提取标题和时间
+      let title = "未命名会话";
+      let firstMessageTime: string | undefined;
+      let lastMessageTime: string | undefined;
+
+      for (const msg of conversation.messages) {
+        if (msg.type === "custom-title" && msg.customTitle) {
+          title = msg.customTitle;
+        }
+        // 尝试从消息中提取时间（如果有的话）
+        if (msg.timestamp) {
+          if (!firstMessageTime) firstMessageTime = msg.timestamp;
+          lastMessageTime = msg.timestamp;
+        }
+      }
+
+      // 如果没有自定义标题，使用第一条用户消息作为标题
+      if (title === "未命名会话") {
+        const firstUserMsg = conversation.messages.find(m => m.type === "user" && m.message);
+        if (firstUserMsg?.message?.content) {
+          const content = firstUserMsg.message.content;
+          // content 可能是字符串或对象数组
+          if (typeof content === "string") {
+            title = content.substring(0, 30);
+          } else if (Array.isArray(content)) {
+            // 查找第一个 text 类型的 block
+            const textBlock = content.find((b: any) => b.type === "text" && b.text);
+            if (textBlock) {
+              title = textBlock.text.substring(0, 30);
+            }
+          }
+        }
+      }
+
+      const timeStr = lastMessageTime ? this.formatTimeAgo(lastMessageTime) : "未知";
+      const msgCount = conversation.messages.length;
+
+      await this.sendToFeishu(
+        `📌 当前会话信息\n\n` +
+        `标题: ${title}\n` +
+        `ID: ${conversation.sessionId}\n` +
+        `消息数: ${msgCount}\n` +
+        `最后活动: ${timeStr}`
+      );
+    } catch (err) {
+      console.error(`[CC] 获取会话信息错误:`, err);
+      await this.sendToFeishu("❌ 获取会话信息失败，请重试。");
+    }
+  }
+
+  /**
+   * 显示设备信息
+   */
+  private async handleDevice(): Promise<void> {
+    console.log("[CC] 查询设备信息");
+
+    try {
+      const config = loadConfig(this.cwd) as DeviceConfig;
+
+      if (!config) {
+        await this.sendToFeishu("❌ 未找到设备配置");
+        return;
+      }
+
+      const createdAt = new Date(config.createdAt);
+      const createdTimeStr = createdAt.toLocaleString("zh-CN", {
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+
+      let output = "📱 当前设备信息\n\n";
+      output += `设备 ID: ${config.deviceId}\n`;
+      output += `配对码: ${config.pairCode}\n`;
+
+      if (config.routeToken) {
+        output += `连接码: ${config.routeToken}\n`;
+      }
+
+      if (config.authToken) {
+        output += `状态: ✅ 已配对\n`;
+      } else {
+        output += `状态: ⏳ 未配对\n`;
+      }
+
+      output += `\n创建时间: ${createdTimeStr}`;
+
+      await this.sendToFeishu(output);
+    } catch (err) {
+      console.error(`[CC] 获取设备信息错误:`, err);
+      await this.sendToFeishu("❌ 获取设备信息失败，请重试。");
+    }
+  }
+
+  /**
+   * 显示帮助信息
+   */
+  private async handleHelp(): Promise<void> {
+    const helpText =
+      "📖 飞书命令帮助\n\n" +
+      "**会话管理**\n" +
+      "/new [标题] - 创建新会话\n" +
+      "/sessions - 查看历史会话\n" +
+      "/switch <序号> - 切换到某个会话\n" +
+      "/current - 显示当前会话信息\n\n" +
+      "**设备管理**\n" +
+      "/device - 查看当前设备信息\n\n" +
+      "**其他**\n" +
+      "/help - 显示此帮助信息\n\n" +
+      "**示例**\n" +
+      "/new 分析代码\n" +
+      "/sessions\n" +
+      "/switch 1\n" +
+      "/device\n\n" +
+      "💡 提示：非命令消息会发送到当前活跃会话";
+
+    await this.sendToFeishu(helpText);
+  }
+
+  /**
+   * 发送消息到飞书
+   */
+  private async sendToFeishu(text: string): Promise<void> {
+    await this.channelManager.broadcast({
+      type: "assistant",
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text }],
+      },
+    } as any);
+  }
+
+  /**
+   * 格式化时间显示
+   */
+  private formatTimeAgo(timestamp: string | number): string {
+    const now = Date.now();
+    const time = typeof timestamp === "string" ? new Date(timestamp).getTime() : timestamp;
+    const diff = now - time;
+
+    const minutes = Math.floor(diff / 60000);
+    const hours = Math.floor(diff / 3600000);
+    const days = Math.floor(diff / 86400000);
+
+    if (minutes < 1) return "刚刚";
+    if (minutes < 60) return `${minutes}分钟前`;
+    if (hours < 24) return `${hours}小时前`;
+    if (days < 7) return `${days}天前`;
+
+    const date = new Date(time);
+    return `${date.getMonth() + 1}/${date.getDate()}`;
+  }
+
   private async handleHistoryList(req: http.IncomingMessage, res: http.ServerResponse) {
-    const auth = this.authenticateRequest(req, res);
-    if (!auth) return;
+    // 验证 token
+    const authHeader = req.headers.authorization;
+    const token = authHeader?.replace("Bearer ", "");
+
+    if (!this.state.paired || token !== this.state.token) {
+      res.writeHead(401, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "未授权" }));
+      return;
+    }
 
     try {
       // 解析 limit 参数（默认 20，传 0 或不传数字则返回全部）
@@ -574,9 +821,9 @@ export class HttpServer {
       const limit = limitParam ? parseInt(limitParam, 10) : 20;
 
       // 使用 adapter 的 listHistory 方法
-      const result = await adapter.listHistory(auth.cwd, limit);
+      const result = await adapter.listHistory(this.cwd, limit);
 
-      console.log(`[History] 返回 ${result.conversations.length}/${result.total} 条历史记录 (cwd: ${auth.cwd})`);
+      console.log(`[History] 返回 ${result.conversations.length}/${result.total} 条历史记录 (cwd: ${this.cwd})`);
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(result));
     } catch (error) {
@@ -587,20 +834,20 @@ export class HttpServer {
   }
 
   private async handleHistoryDetail(req: http.IncomingMessage, res: http.ServerResponse, pathname: string) {
-    const auth = this.authenticateRequest(req, res);
-    if (!auth) return;
+    // 验证 token
+    const authHeader = req.headers.authorization;
+    const token = authHeader?.replace("Bearer ", "");
 
-    // 提取 sessionId: /api/projects/{encodedPath}/histories/{sessionId}
-    const match = pathname.match(/^\/api\/projects\/[^/]+\/histories\/([^/]+)$/);
-    if (!match) {
-      res.writeHead(400, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "无效的路径格式" }));
+    if (!this.state.paired || token !== this.state.token) {
+      res.writeHead(401, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "未授权" }));
       return;
     }
 
-    const sessionId = match[1];
+    // 提取 sessionId: /history/{sessionId}
+    const sessionId = pathname.replace("/history/", "");
 
-    if (!sessionId) {
+    if (!sessionId || sessionId === "list") {
       res.writeHead(400, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: "无效的 sessionId" }));
       return;
@@ -608,7 +855,7 @@ export class HttpServer {
 
     try {
       // 使用 adapter 的 getHistory 方法
-      const conversation = await adapter.getHistory(auth.cwd, sessionId);
+      const conversation = await adapter.getHistory(this.cwd, sessionId);
       if (!conversation) {
         res.writeHead(404, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: "对话不存在" }));
@@ -624,12 +871,27 @@ export class HttpServer {
   }
 
   private async handleRename(req: http.IncomingMessage, res: http.ServerResponse) {
-    const auth = this.authenticateRequest(req, res);
-    if (!auth) return;
+    // 验证 token
+    const authHeader = req.headers.authorization;
+    const token = authHeader?.replace("Bearer ", "");
+
+    if (!this.state.paired || token !== this.state.token) {
+      res.writeHead(401, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "未授权" }));
+      return;
+    }
 
     try {
       const body = await this.readBody(req);
-      const { sessionId, newTitle } = JSON.parse(body);
+      let parsed;
+      try {
+        parsed = JSON.parse(body);
+      } catch {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Invalid JSON" }));
+        return;
+      }
+      const { sessionId, newTitle } = parsed;
 
       // 验证输入
       if (!sessionId || typeof newTitle !== "string") {
@@ -639,7 +901,7 @@ export class HttpServer {
       }
 
       // 执行重命名
-      const success = renameSession(sessionId, newTitle, auth.cwd);
+      const success = renameSession(sessionId, newTitle, this.cwd);
 
       if (success) {
         res.writeHead(200, { "Content-Type": "application/json" });
@@ -655,32 +917,70 @@ export class HttpServer {
     }
   }
 
-  // ============ 工具方法 ============
+  private async handleSkillsList(req: http.IncomingMessage, res: http.ServerResponse, url: URL) {
+    const authHeader = req.headers.authorization;
+    const token = authHeader?.replace("Bearer ", "");
 
-  private readBody(req: http.IncomingMessage): Promise<string> {
+    if (!this.state.paired || token !== this.state.token) {
+      res.writeHead(401, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "未授权" }));
+      return;
+    }
+
+    const page = Math.max(1, parseInt(url.searchParams.get("page") || "1", 10) || 1);
+    const pageSize = Math.min(200, Math.max(1, parseInt(url.searchParams.get("pageSize") || "20", 10) || 20));
+
+    const skillsDir = join(this.cwd, ".claude", "skills");
+    const allItems = listSkills(skillsDir);
+    const total = allItems.length;
+    const start = (page - 1) * pageSize;
+    const items = allItems.slice(start, start + pageSize);
+    const hasMore = start + pageSize < total;
+
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ items, total, page, pageSize, hasMore }));
+  }
+
+  private readBody(req: http.IncomingMessage, maxBytes: number = 10 * 1024 * 1024): Promise<string> {
     return new Promise((resolve, reject) => {
       let body = "";
-      req.on("data", (chunk) => (body += chunk));
+      let size = 0;
+      req.on("data", (chunk: Buffer) => {
+        size += chunk.length;
+        if (size > maxBytes) {
+          req.destroy();
+          reject(new Error("Request body too large"));
+          return;
+        }
+        body += chunk;
+      });
       req.on("end", () => resolve(body));
       req.on("error", reject);
     });
   }
 
-  start(): Promise<number> {
+  async start(): Promise<number> {
     return new Promise((resolve, reject) => {
       // 监听错误事件
       this.server.once('error', (err) => {
         reject(err);
       });
 
-      this.server.listen(PORT, () => {
-        console.log(`[HTTP] 服务启动在端口 ${PORT} (${this.mode} 模式)`);
-        resolve(Number(PORT));
+      const port = Number(process.env.PORT || 18080);
+      this.server.listen(port, async () => {
+        console.log(`[${this.isTls ? "HTTPS" : "HTTP"}] 服务启动在端口 ${port}`);
+
+        // 启动所有通道（包括飞书长连接）
+        await this.channelManager.startAll();
+
+        resolve(port);
       });
     });
   }
 
   stop() {
+    // 停止所有通道
+    this.channelManager.stopAll();
     this.server.close();
   }
 }

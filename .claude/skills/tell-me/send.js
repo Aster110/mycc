@@ -12,18 +12,24 @@ if (!title || !content) {
   process.exit(1);
 }
 
-// ⚠️ 请替换成你自己的飞书 webhook
-// 参考 配置SOP.md 获取 webhook 地址
-const webhook = 'YOUR_FEISHU_WEBHOOK_HERE';
+// 读取配置文件
+const fs = require('fs');
+const path = require('path');
+const configPath = path.join(__dirname, 'config.json');
 
-if (webhook === 'YOUR_FEISHU_WEBHOOK_HERE') {
+let webhook;
+try {
+  const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+  webhook = config.webhook;
+} catch (err) {
+  console.error('❌ 无法读取配置文件:', err.message);
+  process.exit(1);
+}
+
+if (!webhook || webhook === 'YOUR_FEISHU_WEBHOOK_HERE') {
   console.error('❌ 飞书 webhook 未配置');
   console.error('');
-  console.error('请按以下步骤配置：');
-  console.error('1. 打开飞书客户端 → 创建群 → 设置 → 群机器人 → 添加自定义机器人');
-  console.error('2. 复制 Webhook 地址');
-  console.error('3. 编辑 .claude/skills/tell-me/send.js，替换第 9 行的 webhook');
-  console.error('');
+  console.error('请在 config.json 中配置 webhook 地址');
   console.error('详见：.claude/skills/tell-me/配置SOP.md');
   process.exit(1);
 }

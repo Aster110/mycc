@@ -65,17 +65,20 @@ export class CloudflareProvider implements TunnelProvider {
     return new Promise((resolve, reject) => {
       // 获取 cloudflared 路径
       const cloudflaredPath = detectCloudflaredPath();
-      // Windows: 路径加引号防止空格问题，shell: true 让系统 shell 解析命令
-      const cmd = `"${cloudflaredPath}" tunnel --config ${NULL_DEVICE} --url http://localhost:${localPort}`;
-      const proc = spawn(cmd, [], {
+      const proc = spawn(cloudflaredPath, [
+        'tunnel',
+        '--config', NULL_DEVICE,
+        '--url', `http://localhost:${localPort}`
+      ], {
         stdio: ["ignore", "pipe", "pipe"],
-        shell: true,
         windowsHide: true,
       });
 
       this.proc = proc;
       let resolved = false;
-      const urlPattern = /https:\/\/[a-z0-9-]+\.trycloudflare\.com/;
+      // quick tunnel URL 格式: word1-word2-word3-word4.trycloudflare.com
+      // 必须包含至少一个连字符，排除 api.trycloudflare.com 等系统域名
+      const urlPattern = /https:\/\/[a-z0-9]+-[a-z0-9-]+\.trycloudflare\.com/;
 
       const handleOutput = (data: Buffer) => {
         const output = data.toString();

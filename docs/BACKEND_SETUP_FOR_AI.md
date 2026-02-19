@@ -200,7 +200,7 @@ npm start
 | 变量 | 作用 | 示例 |
 |------|------|------|
 | `CLOUDFLARED_PATH` | 指定 cloudflared 路径 | `/opt/bin/cloudflared` |
-| `PORT` | 指定服务端口 | `8080` |
+| `PORT` | 指定服务端口 | `18080` |
 
 ---
 

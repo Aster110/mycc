@@ -5,7 +5,7 @@
  * 1. 进程监控：cloudflared 进程退出时自动重启
  * 2. 心跳检测：定时探测隧道健康状态，连续失败触发重启
  * 3. 防重入锁：避免并发重启冲突
- * 4. 重启限制：超过最大次数后放弃
+ * 4. 重启限制：超过最大次数后放弃，但保持心跳以便后续恢复
  */
 
 import chalk from "chalk";
@@ -21,6 +21,11 @@ const RESTART_DELAY = 2000; // 重启前等待时间（毫秒）
 const DNS_PROPAGATION_DELAY = 30_000; // DNS 传播等待时间（30 秒）
 const WAIT_FOR_READY_TIMEOUT = 60_000; // waitForReady 超时（60 秒）
 const WAIT_FOR_READY_INTERVAL = 5_000; // waitForReady 检查间隔（5 秒）
+const GIVEUP_RETRY_DELAY = 300_000; // 放弃后的重试间隔（5 分钟）
+
+// ============ 日志辅助 ============
+
+const timestamp = () => new Date().toLocaleString("zh-CN", { hour12: false });
 
 // ============ 类型定义 ============
 
@@ -39,6 +44,9 @@ export interface TunnelManagerStatus {
   isRestarting: boolean;
   failCount: number;
   restartAttempts: number;
+  hasGivenUp: boolean;
+  heartbeatActive: boolean;
+  heartbeatCount: number;
 }
 
 // ============ TunnelManager 实现 ============
@@ -54,6 +62,8 @@ export class TunnelManager {
   private restartAttempts = 0;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private isStopped = false;
+  private hasGivenUp = false; // 标记是否已放弃重启
+  private heartbeatCount = 0; // 心跳计数，用于日志
 
   private onRestartSuccess?: (url: string) => Promise<void>;
   private onGiveUp?: () => void;
@@ -68,10 +78,14 @@ export class TunnelManager {
    * 启动隧道
    */
   async start(provider: TunnelProvider): Promise<string> {
+    console.log(chalk.gray(`[TunnelManager] ${timestamp()} 初始化...`));
+
     this.provider = provider;
     this.isStopped = false;
     this.restartAttempts = 0;
     this.failCount = 0;
+    this.hasGivenUp = false;
+    this.heartbeatCount = 0;
 
     const result = await provider.start(this.localPort);
     this.tunnelUrl = result.url;
@@ -83,7 +97,8 @@ export class TunnelManager {
     // 启动心跳检测
     this.startHeartbeat();
 
-    console.log(chalk.gray(`[TunnelManager] 启动完成，心跳监控已开启`));
+    console.log(chalk.gray(`[TunnelManager] ${timestamp()} 启动完成`));
+    console.log(chalk.gray(`[TunnelManager] 配置: 心跳间隔=${HEARTBEAT_INTERVAL/1000}s, 失败阈值=${HEARTBEAT_FAIL_THRESHOLD}次, 最大重试=${MAX_RESTART_ATTEMPTS}次`));
     return result.url;
   }
 
@@ -120,6 +135,9 @@ export class TunnelManager {
       isRestarting: this.isRestarting,
       failCount: this.failCount,
       restartAttempts: this.restartAttempts,
+      hasGivenUp: this.hasGivenUp,
+      heartbeatActive: this.heartbeatTimer !== null,
+      heartbeatCount: this.heartbeatCount,
     };
   }
 
@@ -165,31 +183,50 @@ export class TunnelManager {
     // 清理旧的定时器
     if (this.heartbeatTimer) {
       clearInterval(this.heartbeatTimer);
+      console.log(chalk.gray(`[TunnelManager] ${timestamp()} 清理旧的心跳定时器`));
     }
 
+    this.heartbeatCount = 0;
+    console.log(chalk.gray(`[TunnelManager] ${timestamp()} 启动心跳检测 (间隔=${HEARTBEAT_INTERVAL/1000}s)`));
+
     this.heartbeatTimer = setInterval(async () => {
+      this.heartbeatCount++;
+
       // 重启中或已停止，跳过检测
       if (this.isRestarting || this.isStopped || !this.provider) {
+        console.log(chalk.gray(
+          `[TunnelManager] ${timestamp()} 心跳#${this.heartbeatCount} 跳过 (restarting=${this.isRestarting}, stopped=${this.isStopped}, provider=${!!this.provider})`
+        ));
         return;
       }
 
       const ok = await this.checkHealth();
 
       if (ok) {
+        // 每 10 次心跳输出一次正常日志，减少日志噪音
+        if (this.heartbeatCount % 10 === 0) {
+          console.log(chalk.gray(`[TunnelManager] ${timestamp()} 心跳#${this.heartbeatCount} ✓ 正常`));
+        }
         if (this.failCount > 0) {
-          console.log(chalk.gray(`[TunnelManager] 心跳恢复正常`));
+          console.log(chalk.green(`[TunnelManager] ${timestamp()} 心跳恢复正常 (之前失败${this.failCount}次)`));
         }
         this.failCount = 0;
+        // 心跳成功时重置放弃标记，允许下次重试
+        if (this.hasGivenUp) {
+          console.log(chalk.cyan(`[TunnelManager] ${timestamp()} 隧道恢复，重置放弃标记`));
+          this.hasGivenUp = false;
+          this.restartAttempts = 0;
+        }
       } else {
         this.failCount++;
         console.log(
           chalk.yellow(
-            `[TunnelManager] 心跳失败 (${this.failCount}/${HEARTBEAT_FAIL_THRESHOLD})`
+            `[TunnelManager] ${timestamp()} 心跳#${this.heartbeatCount} 失败 (${this.failCount}/${HEARTBEAT_FAIL_THRESHOLD})`
           )
         );
 
         if (this.failCount >= HEARTBEAT_FAIL_THRESHOLD) {
-          console.log(chalk.red(`[TunnelManager] 心跳连续失败，触发重连`));
+          console.log(chalk.red(`[TunnelManager] ${timestamp()} 心跳连续失败，触发重连`));
           this.restart("heartbeat_fail");
           this.failCount = 0;
         }
@@ -214,31 +251,51 @@ export class TunnelManager {
    * 重启隧道（带防重入锁）
    */
   private async restart(reason: string): Promise<boolean> {
+    console.log(chalk.cyan(`[TunnelManager] ${timestamp()} restart() 被调用 (reason=${reason})`));
+
     // 防重入
     if (this.isRestarting) {
       console.log(
-        chalk.gray(`[TunnelManager] 重启进行中，跳过 (reason=${reason})`)
+        chalk.gray(`[TunnelManager] ${timestamp()} 重启进行中，跳过 (reason=${reason})`)
       );
       return false;
     }
 
     // 检查重试次数
     this.restartAttempts++;
+    console.log(chalk.gray(`[TunnelManager] ${timestamp()} 重试计数: ${this.restartAttempts}/${MAX_RESTART_ATTEMPTS}`));
+
     if (this.restartAttempts > MAX_RESTART_ATTEMPTS) {
       console.error(
         chalk.red(
-          `[TunnelManager] 重启次数超限 (${this.restartAttempts}/${MAX_RESTART_ATTEMPTS})，放弃`
+          `[TunnelManager] ${timestamp()} 重启次数超限 (${this.restartAttempts}/${MAX_RESTART_ATTEMPTS})，暂时放弃`
         )
       );
       console.error(chalk.yellow(`[TunnelManager] 请手动重启: /mycc`));
+      console.error(chalk.gray(`[TunnelManager] ${GIVEUP_RETRY_DELAY/60000} 分钟后会自动重试`));
+
+      this.hasGivenUp = true;
       this.onGiveUp?.();
+
+      // 关键修复：放弃后仍然保持心跳检测，并在一段时间后重置计数允许再次尝试
+      this.ensureHeartbeat();
+
+      // 5 分钟后重置重试计数，允许再次尝试
+      setTimeout(() => {
+        if (this.hasGivenUp && !this.isStopped) {
+          console.log(chalk.cyan(`[TunnelManager] ${timestamp()} 重置重试计数，准备再次尝试`));
+          this.restartAttempts = 0;
+          this.hasGivenUp = false;
+        }
+      }, GIVEUP_RETRY_DELAY);
+
       return false;
     }
 
     this.isRestarting = true;
     console.log(
       chalk.cyan(
-        `[TunnelManager] 开始重连 (reason=${reason}, attempt=${this.restartAttempts})`
+        `[TunnelManager] ${timestamp()} 开始重连 (reason=${reason}, attempt=${this.restartAttempts})`
       )
     );
 
@@ -247,14 +304,17 @@ export class TunnelManager {
       if (this.heartbeatTimer) {
         clearInterval(this.heartbeatTimer);
         this.heartbeatTimer = null;
+        console.log(chalk.gray(`[TunnelManager] ${timestamp()} 心跳已停止`));
       }
 
       // 2. 停止旧的 provider
       if (this.provider) {
+        console.log(chalk.gray(`[TunnelManager] ${timestamp()} 停止旧的 provider...`));
         this.provider.stop();
       }
 
       // 3. 等待一下让端口释放
+      console.log(chalk.gray(`[TunnelManager] ${timestamp()} 等待 ${RESTART_DELAY}ms...`));
       await this.sleep(RESTART_DELAY);
 
       // 4. 重新启动
@@ -262,16 +322,18 @@ export class TunnelManager {
         throw new Error("Provider 不存在");
       }
 
+      console.log(chalk.gray(`[TunnelManager] ${timestamp()} 启动新的 tunnel...`));
       const result = await this.provider.start(this.localPort);
       this.tunnelUrl = result.url;
       this.proc = result.proc || null;
-      console.log(chalk.cyan(`[TunnelManager] 新隧道 URL: ${result.url}`));
+      console.log(chalk.cyan(`[TunnelManager] ${timestamp()} 新隧道 URL: ${result.url}`));
 
       // 5. 等待 DNS 传播（避免 Node.js DNS 负缓存问题）
-      console.log(chalk.gray(`[TunnelManager] 等待 DNS 传播 (${DNS_PROPAGATION_DELAY / 1000}s)...`));
+      console.log(chalk.gray(`[TunnelManager] ${timestamp()} 等待 DNS 传播 (${DNS_PROPAGATION_DELAY / 1000}s)...`));
       await this.sleep(DNS_PROPAGATION_DELAY);
 
       // 6. 验证隧道可用
+      console.log(chalk.gray(`[TunnelManager] ${timestamp()} 验证隧道可用...`));
       const ready = await this.waitForReady();
       if (!ready) {
         throw new Error("隧道验证超时");
@@ -285,25 +347,42 @@ export class TunnelManager {
 
       // 9. 调用回调（重新注册 Worker、更新 current.json 等）
       if (this.onRestartSuccess && this.tunnelUrl) {
+        console.log(chalk.gray(`[TunnelManager] ${timestamp()} 调用 onRestartSuccess...`));
         await this.onRestartSuccess(this.tunnelUrl);
       }
 
       // 10. 重置重试计数（成功了）
       this.restartAttempts = 0;
+      this.hasGivenUp = false;
 
-      console.log(chalk.green(`[TunnelManager] ✓ 重连成功: ${this.tunnelUrl}`));
+      console.log(chalk.green(`[TunnelManager] ${timestamp()} ✓ 重连成功: ${this.tunnelUrl}`));
       this.isRestarting = false;
       return true;
     } catch (error) {
-      console.error(chalk.red(`[TunnelManager] 重连失败:`, error));
+      console.error(chalk.red(`[TunnelManager] ${timestamp()} 重连失败:`), error);
+
+      this.isRestarting = false;
+
+      // 关键修复：失败后确保心跳检测恢复
+      this.ensureHeartbeat();
 
       // 延迟后再次尝试（30 秒，避免触发 Cloudflare 限流）
-      this.isRestarting = false;
+      console.log(chalk.gray(`[TunnelManager] ${timestamp()} 30秒后重试...`));
       setTimeout(() => {
         this.restart("retry_after_fail");
       }, 30000);
 
       return false;
+    }
+  }
+
+  /**
+   * 确保心跳检测在运行
+   */
+  private ensureHeartbeat(): void {
+    if (!this.heartbeatTimer && !this.isStopped) {
+      console.log(chalk.gray(`[TunnelManager] ${timestamp()} 恢复心跳检测`));
+      this.startHeartbeat();
     }
   }
 

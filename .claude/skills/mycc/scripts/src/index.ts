@@ -11,6 +11,8 @@
 import { execSync } from "child_process";
 import { mkdirSync, writeFileSync, existsSync, appendFileSync } from "fs";
 import { homedir } from "os";
+import { dirname } from "path";
+import { fileURLToPath } from "url";
 import { join } from "path";
 
 // 从新模块导入
@@ -20,18 +22,19 @@ import { getConfigDir, loadConfig, deleteConfig, findProjectRoot } from "./confi
 import {
   killPortProcess,
   checkCloudflared,
+  checkCCAvailable,
   getCloudflaredInstallHint,
 } from "./platform.js";
 import qrcode from "qrcode-terminal";
 import chalk from "chalk";
 import { HttpServer } from "./http-server.js";
-import { checkCCAvailable } from "./cc-bridge.js";
 import { startScheduler, stopScheduler, type Task } from "./scheduler.js";
 import { adapter } from "./adapters/index.js";
 import { CloudflareProvider } from "./tunnel-provider.js";
 import { TunnelManager } from "./tunnel-manager.js";
+import { loadPublicUrl, loadEnvFile } from "./env-loader.js";
 
-const PORT = process.env.PORT || 8080;
+const PORT = process.env.PORT || 18080;
 const WORKER_URL = process.env.WORKER_URL || "https://api.mycc.dev";
 const PACKAGE_NAME = "mycc-backend";
 
@@ -63,11 +66,7 @@ async function main() {
 
   switch (command) {
     case "start":
-      if (args.includes("--multi-user")) {
-        await startMultiUserServer(args);
-      } else {
-        await startServer(args);
-      }
+      await startServer(args);
       break;
     case "status":
       console.log("TODO: 显示状态");
@@ -98,15 +97,34 @@ async function startServer(args: string[]) {
   }
   console.log(chalk.green("✓ Claude Code CLI 可用\n"));
 
-  // 检查 cloudflared 是否可用
-  console.log("检查 cloudflared...");
-  const cloudflaredAvailable = await checkCloudflared();
-  if (!cloudflaredAvailable) {
-    console.error(chalk.red("错误: cloudflared 未安装"));
-    console.error(getCloudflaredInstallHint());
-    process.exit(1);
+  // 获取 scripts 目录的父目录（跨平台兼容）
+  // 使用 fileURLToPath 确保 Windows/Linux/macOS 都能正确解析
+  const __filename = fileURLToPath(import.meta.url);
+  const __dirname = dirname(__filename);
+  const scriptsDir = dirname(__dirname); // scripts/ (不包含 src)
+
+  // 第一次加载 .env 文件（搜索可能的位置）
+  // 注意：此时可能还不知道项目根目录，所以搜索多个位置
+  loadEnvFile(process.cwd(), scriptsDir);
+
+  // 检测公网模式（读取 .env 中的 PUBLIC_URL）
+  const publicUrl = loadPublicUrl(process.cwd(), scriptsDir);
+  const isPublicMode = !!publicUrl;
+
+  if (isPublicMode) {
+    console.log(chalk.cyan(`\n公网模式: ${publicUrl}`));
+    console.log(chalk.gray("  跳过 cloudflared（不需要内网穿透）\n"));
+  } else {
+    // 只有内网模式才需要 cloudflared
+    console.log("检查 cloudflared...");
+    const cloudflaredAvailable = await checkCloudflared();
+    if (!cloudflaredAvailable) {
+      console.error(chalk.red("错误: cloudflared 未安装"));
+      console.error(getCloudflaredInstallHint());
+      process.exit(1);
+    }
+    console.log(chalk.green("✓ cloudflared 可用\n"));
   }
-  console.log(chalk.green("✓ cloudflared 可用\n"));
 
   // 解析工作目录
   const cwdIndex = args.indexOf("--cwd");
@@ -164,8 +182,21 @@ async function startServer(args: string[]) {
 
   const { deviceId, pairCode, authToken } = config;
 
-  // 启动 HTTP 服务器（传入已有的 authToken）
-  const server = new HttpServer({ pairCode, cwd, authToken });
+  // 启动 HTTP/HTTPS 服务器（公网模式下检测 Origin Certificate）
+  const certPath = join(scriptsDir, "origin-cert.pem");
+  const keyPath = join(scriptsDir, "origin-key.pem");
+  const tlsConfig = existsSync(certPath) && existsSync(keyPath)
+    ? { certPath, keyPath }
+    : undefined;
+
+  if (tlsConfig) {
+    console.log(chalk.green("✓ 检测到 Origin Certificate，使用 HTTPS\n"));
+  }
+
+  // 再次加载 .env 文件（使用确定的项目根目录）
+  loadEnvFile(cwd);
+
+  const server = new HttpServer(pairCode, cwd, authToken, tlsConfig);
 
   // 如果之前已配对，显示状态
   if (authToken) {
@@ -258,61 +289,76 @@ ${skillLine}
   };
   startScheduler(cwd, executeTask);
 
-  // 启动 cloudflared tunnel（使用 TunnelManager 保活）
-  console.log(chalk.yellow("启动 tunnel...\n"));
-
-  // 创建 Provider 和 Manager
-  const tunnelProvider = new CloudflareProvider(15000);
-
   // tunnelUrl 需要可变，因为重启时会更新
   let tunnelUrl: string;
+  let tunnelManager: TunnelManager | null = null;
 
-  // 创建 TunnelManager，设置重启成功回调
-  const tunnelManager = new TunnelManager({
-    localPort: Number(PORT),
-    onRestartSuccess: async (newUrl: string) => {
-      console.log(chalk.cyan(`[TunnelManager] 更新 tunnelUrl: ${newUrl}`));
-      tunnelUrl = newUrl;
+  if (isPublicMode) {
+    // 公网模式：直接用 PUBLIC_URL，不启动 tunnel
+    tunnelUrl = publicUrl!;
+    console.log(chalk.green(`✓ 使用公网地址: ${tunnelUrl}\n`));
+  } else {
+    // 内网模式：启动 cloudflared tunnel（使用 TunnelManager 保活）
+    console.log(chalk.yellow("启动 tunnel...\n"));
 
-      // 重新注册到 Worker
-      console.log(chalk.gray("重新注册到中转服务器..."));
-      const newRegisterResult = await registerToWorker(newUrl, pairCode, deviceId);
-      if (newRegisterResult?.token) {
-        console.log(chalk.green("✓ 重新注册成功"));
-      } else {
-        console.warn(chalk.yellow("⚠️ 重新注册失败，小程序可能无法访问"));
-      }
-    },
-    onGiveUp: () => {
-      console.error(chalk.red("╔════════════════════════════════════════╗"));
-      console.error(chalk.red("║  Tunnel 重连失败次数过多，已放弃       ║"));
-      console.error(chalk.red("║  请手动重启: /mycc                     ║"));
-      console.error(chalk.red("╚════════════════════════════════════════╝"));
-    },
-  });
+    const tunnelProvider = new CloudflareProvider(120000);
 
-  // 启动 tunnel
-  try {
-    tunnelUrl = await tunnelManager.start(tunnelProvider);
-  } catch (error) {
-    console.error(chalk.red("错误: 无法启动 tunnel"), error);
-    process.exit(1);
+    tunnelManager = new TunnelManager({
+      localPort: Number(PORT),
+      onRestartSuccess: async (newUrl: string) => {
+        console.log(chalk.cyan(`[TunnelManager] 更新 tunnelUrl: ${newUrl}`));
+        tunnelUrl = newUrl;
+
+        console.log(chalk.gray("重新注册到中转服务器..."));
+        const newRegisterResult = await registerToWorker(newUrl, pairCode, deviceId);
+        if (newRegisterResult?.token) {
+          console.log(chalk.green("✓ 重新注册成功"));
+          saveConnectionInfo();
+        } else {
+          console.warn(chalk.yellow("⚠️ 重新注册失败，小程序可能无法访问"));
+        }
+      },
+      onGiveUp: () => {
+        console.error(chalk.red("╔════════════════════════════════════════╗"));
+        console.error(chalk.red("║  Tunnel 重连失败次数过多，已放弃       ║"));
+        console.error(chalk.red("║  请手动重启: /mycc                     ║"));
+        console.error(chalk.red("╚════════════════════════════════════════╝"));
+      },
+    });
+
+    try {
+      tunnelUrl = await tunnelManager.start(tunnelProvider);
+      console.log(chalk.green(`✓ Tunnel 已启动: ${tunnelUrl}`));
+      console.log(chalk.gray(`  保活监控已开启（心跳间隔 60s，失败阈值 3 次）\n`));
+    } catch (error) {
+      console.error(chalk.red("警告: 无法启动 tunnel"), error);
+      console.warn(chalk.yellow("  Web 通道将不可用，但飞书通道仍可正常工作\n"));
+      // 使用占位 URL，避免后续代码崩溃
+      tunnelUrl = "http://localhost disabled";
+      tunnelManager = null; // 标记 tunnel 不可用
+    }
   }
 
-  console.log(chalk.green(`✓ Tunnel 已启动: ${tunnelUrl}`));
-  console.log(chalk.gray(`  保活监控已开启（心跳间隔 60s，失败阈值 3 次）\n`));
-
   // 向 Worker 注册，获取 token（带 deviceId）
-  console.log(chalk.yellow("向中转服务器注册...\n"));
-  const registerResult = await registerToWorker(tunnelUrl, pairCode, deviceId);
-  const token = registerResult?.token ?? null;
-
+  // 只有当 Tunnel 可用时才尝试注册
+  let token: string | null = null;
   let mpUrl: string;
-  if (!token) {
-    console.error(chalk.red("警告: 无法注册到中转服务器，小程序可能无法使用"));
-    console.log(chalk.gray("（直接访问 tunnel URL 仍可用于测试）\n"));
-    mpUrl = tunnelUrl; // fallback
+
+  if (tunnelManager === null) {
+    // Tunnel 不可用，跳过 Worker 注册
+    console.warn(chalk.yellow("Tunnel 不可用，跳过 Worker 注册"));
+    console.warn(chalk.yellow("Web 通道不可用，仅飞书通道可用\n"));
+    mpUrl = "http://localhost disabled";
   } else {
+    console.log(chalk.yellow("向中转服务器注册...\n"));
+    const registerResult = await registerToWorker(tunnelUrl, pairCode, deviceId);
+    token = registerResult?.token ?? null;
+
+    if (!token) {
+      console.error(chalk.red("警告: 无法注册到中转服务器，小程序可能无法使用"));
+      console.log(chalk.gray("（直接访问 tunnel URL 仍可用于测试）\n"));
+      mpUrl = tunnelUrl; // fallback
+    } else {
     // 注册成功，更新并保存配置
     if (registerResult?.isNewDevice) {
       console.log(chalk.green("✓ 新设备注册成功\n"));
@@ -331,6 +377,7 @@ ${skillLine}
     }
 
     mpUrl = `${WORKER_URL}/${token}`;
+    }
   }
 
   // 保存连接信息到文件（统一保存，包含持久化配置）
@@ -417,7 +464,8 @@ ${skillLine}
       // Ctrl+C
       if (key[0] === 3) {
         console.log(chalk.yellow("\n正在退出..."));
-        tunnelManager.stop();
+        adapter.closeAllSessions();
+        tunnelManager?.stop();
         stopScheduler();
         server.stop();
         process.exit(0);
@@ -432,71 +480,17 @@ ${skillLine}
   // 处理退出
   process.on("SIGINT", () => {
     console.log(chalk.yellow("\n正在退出..."));
-    tunnelManager.stop();
+    adapter.closeAllSessions();
+    tunnelManager?.stop();
     stopScheduler();
     server.stop();
     process.exit(0);
   });
 
   process.on("SIGTERM", () => {
-    tunnelManager.stop();
+    adapter.closeAllSessions();
+    tunnelManager?.stop();
     stopScheduler();
-    server.stop();
-    process.exit(0);
-  });
-}
-
-// 多用户模式启动
-async function startMultiUserServer(args: string[]) {
-  // 加载 .env 环境变量
-  const dotenv = await import("dotenv");
-  const { join } = await import("path");
-  dotenv.config({ path: join(import.meta.dirname, '..', '..', '..', '..', 'mycc-backend', '.env') });
-
-  console.log(chalk.cyan("\n=== MyCC 多用户后端 ===\n"));
-
-  // 杀掉旧进程，确保端口可用
-  console.log(chalk.gray("检查端口占用..."));
-  await killPortProcess(Number(PORT));
-
-  // 检查 CC 是否可用
-  console.log("检查 Claude Code CLI...");
-  const ccAvailable = await checkCCAvailable();
-  if (!ccAvailable) {
-    console.error(chalk.red("错误: Claude Code CLI 未安装或不可用"));
-    console.error("请先安装: npm install -g @anthropic-ai/claude-code");
-    process.exit(1);
-  }
-  console.log(chalk.green("✓ Claude Code CLI 可用\n"));
-
-  // 多用户模式不需要 tunnel、pairCode、Worker 注册
-  const server = new HttpServer({ mode: "multi-user" });
-
-  try {
-    await server.start();
-  } catch (error: any) {
-    if (error.code === 'EADDRINUSE') {
-      console.error(chalk.red(`错误: 端口 ${PORT} 已被占用`));
-      console.error(chalk.yellow(`提示: lsof -i :${PORT}`));
-      process.exit(1);
-    }
-    throw error;
-  }
-
-  console.log(chalk.green("✓ 多用户后端已就绪"));
-  console.log(chalk.gray(`  地址: http://localhost:${PORT}`));
-  console.log(chalk.gray(`  模式: multi-user (JWT 认证)`));
-  console.log(chalk.gray(`  环境: ${process.env.NODE_ENV || 'production'}\n`));
-  console.log(chalk.gray("按 Ctrl+C 退出\n"));
-
-  // 处理退出
-  process.on("SIGINT", () => {
-    console.log(chalk.yellow("\n正在退出..."));
-    server.stop();
-    process.exit(0);
-  });
-
-  process.on("SIGTERM", () => {
     server.stop();
     process.exit(0);
   });
@@ -636,16 +630,14 @@ ${chalk.yellow("用法:")}
 ${chalk.yellow("选项:")}
   --cwd <目录>          指定工作目录 (默认: 当前目录)
   --reset               重置设备配置，重新生成连接码和配对码
-  --multi-user          多用户模式（JWT 认证，无需 tunnel）
 
 ${chalk.yellow("环境变量:")}
-  PORT                  HTTP 服务端口 (默认: 8080)
+  PORT                  HTTP 服务端口 (默认: 18080)
 
 ${chalk.yellow("示例:")}
   cc-mp start
   cc-mp start --cwd /path/to/project
-  cc-mp start --reset        # 重置配置，需要重新配对
-  cc-mp start --multi-user   # 多用户模式启动
+  cc-mp start --reset   # 重置配置，需要重新配对
 `);
 }
 

@@ -1,97 +1,85 @@
 /**
  * 跨平台工具函数
  * 集中处理 Windows / Mac / Linux 的差异
+ *
+ * 路径探测使用 resolve-executable.ts 的通用策略链
  */
 
 import { execSync, spawn } from "child_process";
 import { existsSync } from "fs";
-import { parse, join, dirname } from "path";
+import { parse, join } from "path";
+import {
+  resolveExecutable,
+  envVar,
+  whichCommand,
+  npmGlobal,
+  knownPaths,
+  fallback,
+  type ResolveContext,
+} from "./resolve-executable.js";
 
-/**
- * 是否是 Windows 平台
- */
+// ============ 平台常量 ============
+
 export const isWindows = process.platform === "win32";
 
-/**
- * 空设备路径
- * Windows: NUL, Mac/Linux: /dev/null
- */
+/** 空设备路径：Windows: NUL, Mac/Linux: /dev/null */
 export const NULL_DEVICE = isWindows ? "NUL" : "/dev/null";
 
-/**
- * 跨平台 sleep
- */
+// ============ 通用工具 ============
+
 export function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /**
  * 获取路径的根目录
- * Mac/Linux: "/"
- * Windows: "C:\\" 等盘符
+ * Mac/Linux: "/"  Windows: "C:\\"
  */
 export function getRoot(filePath: string): string {
   return parse(filePath).root;
 }
 
-/**
- * 清理占用指定端口的进程
- */
+// ============ 端口管理 ============
+
 export async function killPortProcess(port: number): Promise<void> {
   const maxRetries = 3;
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
-      // 检查端口是否被占用
       const pid = isWindows
         ? getWindowsPortPid(port)
         : getUnixPortPid(port);
 
-      if (!pid) {
-        // 端口未被占用，成功
-        return;
-      }
+      if (!pid) return;
 
-      // 直接强制杀掉进程
       if (isWindows) {
         execSync(`taskkill /PID ${pid} /F`, { stdio: "ignore" });
       } else {
         execSync(`kill -9 ${pid}`, { stdio: "ignore" });
       }
 
-      // 等待端口释放（操作系统需要时间清理）
       await sleep(1000);
 
-      // 验证端口是否已释放
       const stillOccupied = isWindows
         ? getWindowsPortPid(port)
         : getUnixPortPid(port);
 
-      if (!stillOccupied) {
-        // 成功释放
-        return;
-      }
+      if (!stillOccupied) return;
 
-      // 如果还被占用且不是最后一次重试，继续
       if (attempt < maxRetries) {
         console.log(`端口 ${port} 仍被占用，重试 ${attempt}/${maxRetries}...`);
       }
-    } catch (error) {
-      // 命令失败，可能端口未被占用
+    } catch {
       return;
     }
   }
 
-  // 所有重试都失败了
   throw new Error(`无法释放端口 ${port}，请手动检查并关闭占用进程`);
 }
 
-/**
- * 获取 Unix 系统上占用端口的 PID
- */
 function getUnixPortPid(port: number): string | null {
   try {
-    const pid = execSync(`lsof -i :${port} -t 2>/dev/null`, {
+    const pid = execSync(`lsof -i :${port} -t -sTCP:LISTEN 2>/dev/null`, {
       encoding: "utf-8",
     }).trim();
     return pid || null;
@@ -100,9 +88,6 @@ function getUnixPortPid(port: number): string | null {
   }
 }
 
-/**
- * 获取 Windows 系统上占用端口的 PID
- */
 function getWindowsPortPid(port: number): string | null {
   try {
     const result = execSync(
@@ -123,114 +108,97 @@ function getWindowsPortPid(port: number): string | null {
   }
 }
 
+// ============ 运行时 ResolveContext ============
+
+/** 创建真实运行环境的 context */
+function createRealContext(): ResolveContext {
+  return {
+    env: process.env as Record<string, string | undefined>,
+    platform: process.platform,
+    existsSync,
+    execSync: (cmd: string, opts?: { encoding: BufferEncoding }) =>
+      execSync(cmd, { encoding: "utf-8", ...opts }) as string,
+  };
+}
+
+// ============ cloudflared 路径探测 ============
+
 /**
  * 检测 cloudflared 路径
- * 优先级：环境变量 > 常见路径 > 命令名
+ * 策略链：环境变量 → 已知路径 → which/where → 裸命令名
  */
 export function detectCloudflaredPath(): string {
-  // 1. 环境变量优先
-  if (process.env.CLOUDFLARED_PATH) {
-    return process.env.CLOUDFLARED_PATH;
-  }
-
-  if (isWindows) {
-    // Windows: 直接用命令名，依赖 PATH
-    return "cloudflared";
-  } else {
-    // Mac/Linux: 尝试常见路径
-    const paths = [
-      "/opt/homebrew/bin/cloudflared", // macOS ARM
-      "/usr/local/bin/cloudflared", // macOS Intel / Linux
-    ];
-    for (const p of paths) {
-      if (existsSync(p)) return p;
-    }
-    return "cloudflared"; // fallback
-  }
+  const result = resolveExecutable(
+    [
+      envVar("CLOUDFLARED_PATH"),
+      knownPaths((ctx) => {
+        if (ctx.platform === "win32") return [];
+        return [
+          "/opt/homebrew/bin/cloudflared", // macOS ARM
+          "/usr/local/bin/cloudflared",    // macOS Intel / Linux
+        ];
+      }),
+      whichCommand("cloudflared"),
+      fallback("cloudflared"),
+    ],
+    createRealContext()
+  );
+  return result!.path;
 }
+
+// ============ Claude CLI 路径探测 ============
 
 /**
  * 检测 Claude CLI 路径
- * 返回 { executable, cliPath }
- * - Mac/Linux: { executable: "node", cliPath: "/path/to/cli.js" } 或 { executable: "claude", cliPath: "/path/to/claude" }
- * - Windows: { executable: "claude", cliPath: "claude" } 使用 native binary，不转换
+ * 策略链：环境变量 → npm root -g → 已知 cli.js 路径 → which/where → 已知 native 路径 → 裸命令名
+ *
+ * 返回 { executable, cliPath }：
+ * - npm 安装：{ executable: "node", cliPath: "/path/to/cli.js" }
+ * - native 安装：{ executable: "claude", cliPath: "/path/to/claude" }
  */
 export function detectClaudeCliPath(): { executable: string; cliPath: string } {
-  const fallback = { executable: "claude", cliPath: "claude" };
-
-  try {
-    if (isWindows) {
-      // Windows: npm 全局安装的 claude 需要用 node + cli.js 方式调用
-      // 因为 .cmd/.ps1 文件不能直接被 spawn
-      const npmGlobalDir = join(process.env.APPDATA || "", "npm");
-
-      // 尝试找到 cli.js 入口文件
-      const cliJsPath = join(npmGlobalDir, "node_modules", "@anthropic-ai", "claude-code", "cli.js");
-      if (existsSync(cliJsPath)) {
-        return { executable: "node", cliPath: cliJsPath };
-      }
-
-      // 检查常见安装路径（native binary）
-      const commonPaths = [
-        join(process.env.LOCALAPPDATA || "", "Programs", "Claude", "claude.exe"),
-        join(process.env.LOCALAPPDATA || "", "Microsoft", "WinGet", "Links", "claude.exe"),
-      ];
-      for (const p of commonPaths) {
-        if (existsSync(p)) {
-          return { executable: "claude", cliPath: p };
-        }
-      }
-
-      // 回退到 "claude"，依赖 PATH
-      return { executable: "claude", cliPath: "claude" };
-    } else {
-      // Mac/Linux: 使用 which 命令，可能需要 node + cli.js
-      try {
-        const result = execSync("which claude", { encoding: "utf-8" }).trim();
-        if (result) {
-          // 方法1: 用 npm root -g 获取全局模块路径（最可靠）
-          try {
-            const npmGlobalRoot = execSync("npm root -g", { encoding: "utf-8" }).trim();
-            const cliJsPath = join(npmGlobalRoot, "@anthropic-ai", "claude-code", "cli.js");
-            if (existsSync(cliJsPath)) {
-              return { executable: "node", cliPath: cliJsPath };
-            }
-          } catch {
-            // npm root -g 失败，继续尝试其他方法
-          }
-
-          // 方法2: 检查常见的全局安装路径
-          const commonGlobalPaths = [
+  const result = resolveExecutable(
+    [
+      envVar("CLAUDE_PATH"),
+      // 动态探测：npm root -g（跨平台，覆盖 nvm/volta/标准安装）
+      npmGlobal("@anthropic-ai/claude-code", "cli.js"),
+      // 已知 cli.js 路径（npm root -g 失败时的 fallback）
+      knownPaths(
+        (ctx) => {
+          if (ctx.platform === "win32") return [];
+          return [
             "/usr/local/lib/node_modules/@anthropic-ai/claude-code/cli.js",
             "/opt/homebrew/lib/node_modules/@anthropic-ai/claude-code/cli.js",
           ];
-          for (const p of commonGlobalPaths) {
-            if (existsSync(p)) {
-              return { executable: "node", cliPath: p };
-            }
-          }
+        },
+        { executable: "node" }
+      ),
+      // which/where（可能找到 wrapper script 或 native binary）
+      whichCommand("claude"),
+      // 已知 native binary 路径（Windows 特有）
+      knownPaths(
+        (ctx) => {
+          if (ctx.platform !== "win32") return [];
+          const home = ctx.env.USERPROFILE || "";
+          const localAppData = ctx.env.LOCALAPPDATA || "";
+          return [
+            join(home, ".local", "bin", "claude.exe"),          // #9 修复
+            join(localAppData, "Programs", "Claude", "claude.exe"),
+            join(localAppData, "Microsoft", "WinGet", "Links", "claude.exe"),
+          ];
+        },
+        { executable: "claude" }
+      ),
+      fallback("claude"),
+    ],
+    createRealContext()
+  );
 
-          // 方法3: which claude 返回的直接就是 cli.js（symlink 解析后）
-          if (result.endsWith("cli.js")) {
-            return { executable: "node", cliPath: result };
-          }
-
-          // 都没找到，用 claude 命令本身
-          return { executable: "claude", cliPath: result };
-        }
-      } catch {
-        // which 失败
-      }
-      return fallback;
-    }
-  } catch {
-    return fallback;
-  }
+  return { executable: result!.executable, cliPath: result!.path };
 }
 
-/**
- * 获取 cloudflared 安装提示
- */
+// ============ 安装提示 ============
+
 export function getCloudflaredInstallHint(): string {
   if (isWindows) {
     return `请下载 cloudflared 并添加到 PATH:
@@ -241,6 +209,26 @@ export function getCloudflaredInstallHint(): string {
 5. 将该目录添加到系统 PATH 环境变量`;
   } else {
     return "安装方法: brew install cloudflare/cloudflare/cloudflared";
+  }
+}
+
+// ============ 可用性检测 ============
+
+/**
+ * 检查 Claude Code CLI 是否可用
+ * 使用 detectClaudeCliPath 的结果，不硬编码命令名
+ */
+export async function checkCCAvailable(): Promise<boolean> {
+  try {
+    const { executable, cliPath } = detectClaudeCliPath();
+    if (executable === "node") {
+      execSync(`node "${cliPath}" --version`, { stdio: "pipe" });
+    } else {
+      execSync(`"${cliPath}" --version`, { stdio: "pipe" });
+    }
+    return true;
+  } catch {
+    return false;
   }
 }
 

@@ -139,7 +139,7 @@ winget install Cloudflare.cloudflared
 
 ```bash
 # 1. 后端在跑吗？
-lsof -i :8080
+lsof -i :18080
 # 有输出 = 在跑，没输出 = 没跑，需要启动
 
 # 2. 连接信息对吗？
@@ -164,7 +164,7 @@ curl -s $(cat .claude/skills/mycc/current.json | jq -r '.tunnelUrl')/health
 **重启后端命令**：
 ```bash
 # 杀掉旧进程
-lsof -i :8080 -t | xargs kill 2>/dev/null
+lsof -i :18080 -t | xargs kill 2>/dev/null
 
 # 重新启动
 .claude/skills/mycc/scripts/node_modules/.bin/tsx .claude/skills/mycc/scripts/src/index.ts start
