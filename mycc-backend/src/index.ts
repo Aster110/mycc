@@ -4,6 +4,8 @@ import dotenv from 'dotenv';
 import { authRoutes } from './routes/auth.js';
 import { chatRoutes } from './routes/chat.js';
 import { billingRoutes } from './routes/billing.js';
+import { skillsRoutes } from './routes/skills.js';
+import { automationsRoutes } from './routes/automations.js';
 import { pool } from './db/client.js';
 import { initSSHPool, getSSHPool } from './ssh/pool.js';
 import type { SSHConfig } from './ssh/types.js';
@@ -54,6 +56,8 @@ fastify.get('/health', async () => {
 await fastify.register(authRoutes);
 await fastify.register(chatRoutes);
 await fastify.register(billingRoutes);
+await fastify.register(skillsRoutes);
+await fastify.register(automationsRoutes);
 
 // 启动服务器
 async function start() {

@@ -1,7 +1,7 @@
 #!/bin/bash
 # API 测试脚本
 
-BASE_URL="http://localhost:8080"
+BASE_URL="http://localhost:8082"
 TOKEN=""
 
 echo "=== MyCC Backend API 测试 ==="
@@ -62,6 +62,18 @@ echo ""
 # 7. 获取使用统计
 echo "7️⃣ 获取使用统计"
 curl -s "$BASE_URL/api/billing/usage" \
+  -H "Authorization: Bearer $TOKEN" | jq .
+echo ""
+
+# 8. 测试 Skills API
+echo "8️⃣ 测试 Skills API"
+curl -s "$BASE_URL/api/skills" \
+  -H "Authorization: Bearer $TOKEN" | jq .
+echo ""
+
+# 9. 测试 Automations API
+echo "9️⃣ 测试 Automations API"
+curl -s "$BASE_URL/api/automations" \
   -H "Authorization: Bearer $TOKEN" | jq .
 echo ""
 
