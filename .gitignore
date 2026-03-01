@@ -1,6 +1,7 @@
 # ====================================
 # 通用规则
 # ====================================
+.idea/
 node_modules/
 dist/
 build/
@@ -106,6 +107,12 @@ test-fallback.ps1
 test-hooks.cmd
 test-nodejs.ps1
 update-cmd-gitbash.ps1
+
+# ====================================
+# Collect Skill 运行时文件
+# ====================================
+.claude/skills/collect/.fxb-token
+1-Inbox/_collect/
 
 # 其他
 ieee.png
