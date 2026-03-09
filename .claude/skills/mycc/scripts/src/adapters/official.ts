@@ -271,8 +271,18 @@ export class OfficialAdapter implements CCAdapter {
     const session = this.getOrCreateSession({ sessionId, model, cwd, settingSources, appendSystemPrompt });
     const isNewSession = !sessionId;
 
+    const effectiveMessage = appendSystemPrompt
+      ? `[系统补充说明]
+${appendSystemPrompt}
+[/系统补充说明]
+
+[用户消息]
+${message}
+[/用户消息]`
+      : message;
+
     // 构造消息内容（纯文本或图文混合）
-    const content = buildMessageContent(message, images);
+    const content = buildMessageContent(effectiveMessage, images);
 
     // 根据内容类型选择 send 格式
     if (typeof content === "string") {
