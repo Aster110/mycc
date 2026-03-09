@@ -176,7 +176,7 @@ describe("FeishuChannel", () => {
       const sendCall = mockFetch.mock.calls[1];
       expect(sendCall[0]).toContain("/im/v1/messages");
       const body = JSON.parse(sendCall[1].body);
-      expect(body.msg_type).toBe("post");
+      expect(body.msg_type).toBe("interactive");
       expect(body.receive_id).toBe("ou_test_user");
     });
 
@@ -419,7 +419,7 @@ describe("FeishuChannel", () => {
       expect(body.msg_type).toBe("interactive");
     });
 
-    it("纯文本消息发送 post 格式", async () => {
+    it("纯文本消息发送 interactive card 格式（schema 2.0）", async () => {
       await channel.send({ type: "text", text: "no table here" });
 
       const sendCalls = mockFetch.mock.calls.filter(
@@ -427,7 +427,9 @@ describe("FeishuChannel", () => {
       );
       expect(sendCalls).toHaveLength(1);
       const body = JSON.parse(sendCalls[0][1].body);
-      expect(body.msg_type).toBe("post");
+      expect(body.msg_type).toBe("interactive");
+      const card = JSON.parse(body.content);
+      expect(card.schema).toBe("2.0");
     });
   });
 
@@ -601,7 +603,7 @@ describe("FeishuChannel", () => {
       expect(sendCalls).toHaveLength(1);
 
       const body = JSON.parse(sendCalls[0][1].body);
-      expect(body.msg_type).toBe("post");
+      expect(body.msg_type).toBe("interactive");
     });
 
     it("sendMessageToFeishu - getAccessToken 返回 null → 返回 false", async () => {
@@ -745,8 +747,8 @@ describe("FeishuChannel", () => {
         session_id: "sess-1",
       });
 
-      // 验证顺序：先上传图片 → 发送图片消息 → 发送文字消息
-      expect(callOrder).toEqual(["upload_image", "send_image", "send_post"]);
+      // 验证顺序：先上传图片 → 发送图片消息 → 发送文字消息（现在文字走 interactive card）
+      expect(callOrder).toEqual(["upload_image", "send_image", "send_interactive"]);
     });
 
     it("system + images 上传失败 → 不崩", async () => {
@@ -804,7 +806,7 @@ describe("FeishuChannel", () => {
       });
     });
 
-    it("sendMarkdownMessage - 飞书 API 返回 code != 0 → 返回 false 不崩", async () => {
+    it("sendMarkdownCardMessage - 飞书 API 返回 code != 0 → 返回 false 不崩", async () => {
       mockFetch.mockImplementation((url: string) => {
         if (url.includes("tenant_access_token")) {
           return Promise.resolve({
@@ -826,7 +828,7 @@ describe("FeishuChannel", () => {
         });
       });
 
-      // 纯文本走 sendMarkdownMessage 路径
+      // 纯文本走 sendMarkdownCardMessage 路径
       await expect(
         channel.send({ type: "text", text: "rate limited message" })
       ).resolves.toBeUndefined();
@@ -837,10 +839,10 @@ describe("FeishuChannel", () => {
       );
       expect(sendCalls).toHaveLength(1);
       const body = JSON.parse(sendCalls[0][1].body);
-      expect(body.msg_type).toBe("post"); // 普通文本走 post
+      expect(body.msg_type).toBe("interactive"); // 现在所有文本都走 interactive card
     });
 
-    it("sendMarkdownMessage - fetch 抛异常（网络中断）→ 不向上抛", async () => {
+    it("sendMarkdownCardMessage - fetch 抛异常（网络中断）→ 不向上抛", async () => {
       mockFetch.mockImplementation((url: string) => {
         if (url.includes("tenant_access_token")) {
           return Promise.resolve({
@@ -1071,7 +1073,7 @@ describe("FeishuChannel", () => {
       expect((channel as any).currentReactionId).toBeNull();
     });
 
-    it("text 事件含 Markdown 表格 → 走 interactive card 路径", async () => {
+    it("text 事件含 Markdown 表格 → 走 schema 2.0 markdown 卡片路径", async () => {
       const tableText = [
         "以下是分析结果：",
         "",
@@ -1092,16 +1094,16 @@ describe("FeishuChannel", () => {
       const body = JSON.parse(sendCalls[0][1].body);
       expect(body.msg_type).toBe("interactive");
 
-      // 验证卡片内容包含表格数据
+      // 验证是 schema 2.0 markdown 卡片，表格内容保留在 markdown 中
       const card = JSON.parse(body.content);
-      // 卡片 elements 应包含表格元素
-      const tableElement = card.elements.find((e: any) => e.tag === "table");
-      expect(tableElement).toBeDefined();
-      expect(tableElement.columns).toHaveLength(3);
-      expect(tableElement.rows).toHaveLength(2);
+      expect(card.schema).toBe("2.0");
+      const markdownElement = card.body.elements.find((e: any) => e.tag === "markdown");
+      expect(markdownElement).toBeDefined();
+      expect(markdownElement.content).toContain("DAU");
+      expect(markdownElement.content).toContain("留存");
     });
 
-    it("parseMarkdownTable 表格前后有文字 → 正确分离", async () => {
+    it("parseMarkdownTable 表格前后有文字 → schema 2.0 卡片包含完整内容", async () => {
       const textWithTable = [
         "前置文字第一行",
         "前置文字第二行",
@@ -1123,25 +1125,15 @@ describe("FeishuChannel", () => {
       expect(body.msg_type).toBe("interactive");
 
       const card = JSON.parse(body.content);
-      // 应有：前置文字 div + table + 后置文字 div
-      const divElements = card.elements.filter((e: any) => e.tag === "div");
-      const tableElements = card.elements.filter((e: any) => e.tag === "table");
-
-      expect(tableElements).toHaveLength(1);
-      // 前置文字和后置文字应该在 div 元素中
-      expect(divElements.length).toBeGreaterThanOrEqual(1);
-
-      // 前置文字包含原文
-      const beforeDiv = divElements[0];
-      expect(beforeDiv.text.content).toContain("前置文字");
-
-      // 后置文字
-      if (divElements.length >= 2) {
-        expect(divElements[1].text.content).toContain("后置文字");
-      }
+      expect(card.schema).toBe("2.0");
+      const markdownElement = card.body.elements.find((e: any) => e.tag === "markdown");
+      expect(markdownElement).toBeDefined();
+      // 前置文字、表格内容、后置文字都在 markdown 中
+      expect(markdownElement.content).toContain("前置文字");
+      expect(markdownElement.content).toContain("后置文字");
     });
 
-    it("parseMarkdownTable 多列复杂表格 → 正确解析", async () => {
+    it("parseMarkdownTable 多列复杂表格 → schema 2.0 卡片保留表格内容", async () => {
       const complexTable = [
         "| 项目 | 负责人 | 状态 | 截止日期 | 备注 |",
         "|------|--------|------|----------|------|",
@@ -1160,19 +1152,13 @@ describe("FeishuChannel", () => {
       expect(body.msg_type).toBe("interactive");
 
       const card = JSON.parse(body.content);
-      const tableElement = card.elements.find((e: any) => e.tag === "table");
-      expect(tableElement).toBeDefined();
-
-      // 5 列
-      expect(tableElement.columns).toHaveLength(5);
-      expect(tableElement.columns[0].display_name).toBe("项目");
-      expect(tableElement.columns[4].display_name).toBe("备注");
-
-      // 3 行数据
-      expect(tableElement.rows).toHaveLength(3);
-      expect(tableElement.rows[0].col_0).toBe("登录");
-      expect(tableElement.rows[1].col_1).toBe("李四");
-      expect(tableElement.rows[2].col_2).toBe("待开始");
+      expect(card.schema).toBe("2.0");
+      const markdownElement = card.body.elements.find((e: any) => e.tag === "markdown");
+      expect(markdownElement).toBeDefined();
+      // 验证表格内容保留
+      expect(markdownElement.content).toContain("登录");
+      expect(markdownElement.content).toContain("李四");
+      expect(markdownElement.content).toContain("待开始");
     });
   });
 });

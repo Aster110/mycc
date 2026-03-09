@@ -97,16 +97,28 @@ npx tsx .claude/skills/mycc/scripts/src/index.ts start
 sleep 5 && cat .claude/skills/mycc/current.json
 ```
 
+### 3.5 检查通道开关
+
+读取 `.env` 中的 `CHANNEL_WEB` 值（默认为 `true`）：
+```bash
+grep CHANNEL_WEB .env 2>/dev/null || echo "CHANNEL_WEB=true"
+```
+
 ### 4. 告知用户
 
-**连接信息**：
+**通道状态**（根据 `.env` 实际配置显示）：
+- Web 通道：`CHANNEL_WEB=false` 时已禁用，**不要展示 Web URL，不要打开浏览器**
+- 飞书通道：配置 `FEISHU_APP_ID` 等环境变量后自动启动
+
+**如果 Web 通道已启用（`CHANNEL_WEB` 不为 `false`）**，展示：
 - 连接码（routeToken）
 - 配对码（pairCode）
 - 访问 https://mycc.dev 输入配对
 
-**通道状态**：
-- Web 通道：默认启动
-- 飞书通道：配置环境变量后自动启动
+**如果 Web 通道已禁用（`CHANNEL_WEB=false`）**，只展示：
+- 飞书通道状态
+- tunnel URL（供飞书事件订阅用）
+- 不展示 mpUrl，不提及 mycc.dev
 
 ## 飞书模式配置
 

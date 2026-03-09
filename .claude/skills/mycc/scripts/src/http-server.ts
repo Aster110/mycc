@@ -255,6 +255,13 @@ export class HttpServer {
   }
 
   private async handleChat(req: http.IncomingMessage, res: http.ServerResponse) {
+    // 渠道开关检查
+    if (process.env.CHANNEL_WEB === "false") {
+      res.writeHead(403, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Web channel is disabled" }));
+      return;
+    }
+
     // 验证 token
     const authHeader = req.headers.authorization;
     const token = authHeader?.replace("Bearer ", "");
@@ -710,12 +717,12 @@ export class HttpServer {
         console.log(`[${this.isTls ? "HTTPS" : "HTTP"}] 服务启动在端口 ${port}`);
 
         // 动态加载并注册飞书通道（如果配置了环境变量）
-        if (process.env.FEISHU_APP_ID && process.env.FEISHU_APP_SECRET) {
+        if (process.env.CHANNEL_FEISHU !== "false" && process.env.FEISHU_APP_ID && process.env.FEISHU_APP_SECRET) {
           try {
             const { FeishuChannel } = await import("./channels/feishu.js");
             this.feishuChannel = new FeishuChannel();
-            this.feishuChannel.onMessage(async (message: string, images?: Array<{ data: string; mediaType: string }>) => {
-              await this.feishuCommands.processMessage(message, images);
+            this.feishuChannel.onMessage(async (message: string, images?: Array<{ data: string; mediaType: string }>, messageId?: string) => {
+              await this.feishuCommands.processMessage(message, images, messageId);
             });
             this.channelManager.register(this.feishuChannel);
             // 注入 feishuChannel 到 FeishuCommands（延迟注入）

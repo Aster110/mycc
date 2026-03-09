@@ -6,7 +6,7 @@
 $OutputEncoding = [System.Text.Encoding]::UTF8
 
 # Configuration
-$PROJECT_DIR = "E:\AI\mycc\AImycc"
+$PROJECT_DIR = $PSScriptRoot
 $SCRIPT_DIR = "$PROJECT_DIR\.claude\skills\mycc\scripts"
 $LOG_FILE = "$PROJECT_DIR\.claude\skills\mycc\backend.log"
 $CONFIG_FILE = "$PROJECT_DIR\.claude\skills\mycc\current.json"
@@ -139,7 +139,9 @@ while ($elapsed -lt $timeout) {
     if (Test-Path $CONFIG_FILE) {
         try {
             $config = Get-Content $CONFIG_FILE -Raw | ConvertFrom-Json
-            if ($config.routeToken -and $config.pairCode -and $config.tunnelUrl) {
+            $webDisabled = ($env:CHANNEL_WEB -eq "false")
+            $readyCheck = if ($webDisabled) { $config.pairCode -and $config.tunnelUrl } else { $config.routeToken -and $config.pairCode -and $config.tunnelUrl }
+            if ($readyCheck) {
                 break
             }
         } catch {
@@ -187,19 +189,27 @@ Write-Host "+------------------------------------------+" -ForegroundColor White
 Write-Host ""
 
 Write-Host "+------------------------------------------+" -ForegroundColor White
-Write-Host "|  Feishu Channel Enabled:                  |" -ForegroundColor White
+Write-Host "|  Channel Status:                          |" -ForegroundColor White
 Write-Host "+------------------------------------------+" -ForegroundColor White
-Write-Host ("|  Feishu Group:   " + $env:FEISHU_RECEIVE_USER_ID) -ForegroundColor Cyan
-Write-Host "|  Status: ✓ Connected (WebSocket mode)    " -ForegroundColor Green
+$webStatus = if ($env:CHANNEL_WEB -eq "false") { "x Disabled" } else { "v Enabled" }
+$feishuStatus = if ($env:CHANNEL_FEISHU -eq "false") { "x Disabled" } elseif ($env:FEISHU_APP_ID) { "v Enabled (WebSocket)" } else { "x No credentials" }
+$webColor = if ($env:CHANNEL_WEB -eq "false") { "Gray" } else { "Green" }
+$feishuColor = if ($env:CHANNEL_FEISHU -eq "false") { "Gray" } elseif ($env:FEISHU_APP_ID) { "Green" } else { "Yellow" }
+Write-Host ("|  Web:    " + $webStatus) -ForegroundColor $webColor
+Write-Host ("|  Feishu: " + $feishuStatus) -ForegroundColor $feishuColor
 Write-Host "+------------------------------------------+" -ForegroundColor White
 Write-Host ""
 
-# Open browser
-Write-Host "Opening browser..." -ForegroundColor Gray
-try {
-    Start-Process $config.mpUrl
-} catch {
-    Write-Host "  Failed to open browser" -ForegroundColor Yellow
+# Open browser (only when Web channel is enabled)
+if ($env:CHANNEL_WEB -ne "false" -and $config.mpUrl) {
+    Write-Host "Opening browser..." -ForegroundColor Gray
+    try {
+        Start-Process $config.mpUrl
+    } catch {
+        Write-Host "  Failed to open browser" -ForegroundColor Yellow
+    }
+} else {
+    Write-Host "Web channel disabled, skipping browser open." -ForegroundColor Gray
 }
 
 Write-Host ""
