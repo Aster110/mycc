@@ -107,11 +107,16 @@ async function startServer(args: string[]) {
   // 注意：此时可能还不知道项目根目录，所以搜索多个位置
   loadEnvFile(process.cwd(), scriptsDir);
 
+  // Web 渠道禁用时：跳过 tunnel，忽略 PUBLIC_URL
+  const webChannelDisabled = process.env.CHANNEL_WEB === "false";
+
   // 检测公网模式（读取 .env 中的 PUBLIC_URL）
-  const publicUrl = loadPublicUrl(process.cwd(), scriptsDir);
+  const publicUrl = webChannelDisabled ? null : loadPublicUrl(process.cwd(), scriptsDir);
   const isPublicMode = !!publicUrl;
 
-  if (isPublicMode) {
+  if (webChannelDisabled) {
+    console.log(chalk.yellow("\nWeb 渠道已禁用，跳过 tunnel\n"));
+  } else if (isPublicMode) {
     console.log(chalk.cyan(`\n公网模式: ${publicUrl}`));
     console.log(chalk.gray("  跳过 cloudflared（不需要内网穿透）\n"));
   } else {
@@ -293,7 +298,11 @@ ${skillLine}
   let tunnelUrl: string;
   let tunnelManager: TunnelManager | null = null;
 
-  if (isPublicMode) {
+  if (webChannelDisabled) {
+    // Web 渠道禁用：不启动 tunnel，忽略 PUBLIC_URL
+    tunnelUrl = "http://localhost disabled";
+    tunnelManager = null;
+  } else if (isPublicMode) {
     // 公网模式：直接用 PUBLIC_URL，不启动 tunnel
     tunnelUrl = publicUrl!;
     console.log(chalk.green(`✓ 使用公网地址: ${tunnelUrl}\n`));
@@ -345,9 +354,13 @@ ${skillLine}
   let mpUrl: string;
 
   if (tunnelManager === null && !isPublicMode) {
-    // Tunnel 不可用，跳过 Worker 注册
-    console.warn(chalk.yellow("Tunnel 不可用，跳过 Worker 注册"));
-    console.warn(chalk.yellow("Web 通道不可用，仅飞书通道可用\n"));
+    // Web 渠道禁用或 Tunnel 不可用，跳过 Worker 注册
+    if (webChannelDisabled) {
+      console.log(chalk.yellow("Web 渠道已禁用，跳过 Worker 注册，仅飞书通道可用\n"));
+    } else {
+      console.warn(chalk.yellow("Tunnel 不可用，跳过 Worker 注册"));
+      console.warn(chalk.yellow("Web 通道不可用，仅飞书通道可用\n"));
+    }
     mpUrl = "http://localhost disabled";
   } else {
     console.log(chalk.yellow("向中转服务器注册...\n"));
