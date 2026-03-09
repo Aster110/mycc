@@ -7,6 +7,7 @@ import {
   unstable_v2_resumeSession,
   type SDKSession,
   type SDKUserMessage,
+  type SettingSource,
 } from "@anthropic-ai/claude-agent-sdk";
 import type { CCAdapter, SSEEvent, SessionParams } from "./interface.js";
 import type { ChatParams, ConversationSummary, ConversationHistory } from "../types.js";
@@ -31,6 +32,28 @@ const CLAUDE_CLI_PATH = ensurePatchedCli(_systemCliPath, _patchedPath);
 
 /** v2 SDKSessionOptions 必须提供 model，这是默认值 */
 const DEFAULT_MODEL = "sonnet";
+const DEFAULT_SETTING_SOURCES: SettingSource[] = ["user", "project", "local"];
+type ClaudeCodeSystemPrompt = {
+  type: "preset";
+  preset: "claude_code";
+  append?: string;
+};
+type ExtendedSDKSessionOptions = Parameters<typeof unstable_v2_createSession>[0] & {
+  settingSources?: SettingSource[];
+  systemPrompt?: string | ClaudeCodeSystemPrompt;
+};
+
+function resolveAppendSystemPrompt(explicitAppend?: string): string | undefined {
+  const envAppend = process.env.MYCC_APPEND_SYSTEM_PROMPT?.trim();
+  const envIdentity = process.env.MYCC_UPSTREAM_MODEL_LABEL?.trim();
+
+  if (explicitAppend?.trim()) return explicitAppend.trim();
+  if (envAppend) return envAppend;
+  if (envIdentity) {
+    return `当前实际底层模型为 ${envIdentity}（可能通过兼容网关接入）。当用户询问你是什么模型时，请如实说明这一点，不要只重复兼容层的 Claude 模型别名。`;
+  }
+  return undefined;
+}
 
 /** Session 超时时间：15 分钟无活动自动关闭 */
 const SESSION_TIMEOUT_MS = 15 * 60 * 1000;
@@ -47,7 +70,7 @@ const CLEANUP_INTERVAL_MS = 2 * 60 * 1000;
 /**
  * 构造 v2 SDKSessionOptions
  */
-function buildSessionOptions(model?: string) {
+function buildSessionOptions(model?: string, settingSources?: SettingSource[], appendSystemPrompt?: string) {
   // 清除 CLAUDECODE 环境变量，避免子进程被误判为嵌套会话 (#16)
   const cleanEnv = { ...process.env };
   delete cleanEnv.CLAUDECODE;
@@ -55,8 +78,11 @@ function buildSessionOptions(model?: string) {
   // root 用户不能用 --dangerously-skip-permissions（CLI 安全限制）
   const isRoot = process.getuid?.() === 0;
 
-  const options: Parameters<typeof unstable_v2_createSession>[0] = {
+  const resolvedAppendSystemPrompt = resolveAppendSystemPrompt(appendSystemPrompt);
+
+  const options: ExtendedSDKSessionOptions = {
     model: model || DEFAULT_MODEL,
+    settingSources: settingSources ?? DEFAULT_SETTING_SOURCES,
     pathToClaudeCodeExecutable: CLAUDE_CLI_PATH,
     permissionMode: "bypassPermissions",
     ...(!isRoot && { allowDangerouslySkipPermissions: true }),
@@ -69,6 +95,14 @@ function buildSessionOptions(model?: string) {
       CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
     },
   };
+
+  if (resolvedAppendSystemPrompt) {
+    options.systemPrompt = {
+      type: "preset",
+      preset: "claude_code",
+      append: resolvedAppendSystemPrompt,
+    };
+  }
 
   // 如果检测到需要用 node 执行（npm 全局安装），设置 executable
   if (CLAUDE_EXECUTABLE === "node") {
@@ -115,7 +149,7 @@ export class OfficialAdapter implements CCAdapter {
    * 由 chat() 在 stream 中拿到 sessionId 后调 registerSession 存入池
    */
   getOrCreateSession(params: SessionParams): SDKSession {
-    const { sessionId, model, cwd } = params;
+    const { sessionId, model, cwd, settingSources, appendSystemPrompt } = params;
 
     // 池中有 → 复用
     if (sessionId && this.sessions.has(sessionId)) {
@@ -123,7 +157,7 @@ export class OfficialAdapter implements CCAdapter {
       return this.sessions.get(sessionId)!;
     }
 
-    const options = buildSessionOptions(model);
+    const options = buildSessionOptions(model, settingSources, appendSystemPrompt);
 
     // v2 SDKSessionOptions 没有 cwd 字段，子进程通过 process.cwd() 继承工作目录
     // 必须在创建 session（spawn 子进程）前 chdir 到正确目录，否则 skills 等功能失效
@@ -231,10 +265,10 @@ export class OfficialAdapter implements CCAdapter {
    * 5. 总安全阀（30 分钟）→ 强制退出
    */
   async *chat(params: ChatParams): AsyncIterable<SSEEvent> {
-    const { message, sessionId, images, model, cwd } = params;
+    const { message, sessionId, images, model, cwd, settingSources, appendSystemPrompt } = params;
 
     // 获取或创建 session
-    const session = this.getOrCreateSession({ sessionId, model, cwd });
+    const session = this.getOrCreateSession({ sessionId, model, cwd, settingSources, appendSystemPrompt });
     const isNewSession = !sessionId;
 
     // 构造消息内容（纯文本或图文混合）
