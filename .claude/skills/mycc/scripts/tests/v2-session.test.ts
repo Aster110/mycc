@@ -918,7 +918,7 @@ describe("settingSources patch — 修复 Skills 加载", () => {
     // patch 后不应再有硬编码的 settingSources:[]
     // 注意：e6 构造函数中也可能有 settingSources，但 V9→e6 的那个必须有默认值
     // 用更精确的模式匹配 V9 构造函数中的 settingSources
-    expect(sdkSource).toContain('settingSources:X.settingSources??["user","project"]');
+    expect(sdkSource).toContain('settingSources:X.settingSources??["user","project","local"]');
   });
 
   it("patch 脚本应存在于 scripts/patch-sdk.mjs", () => {
@@ -973,6 +973,12 @@ describe("official.ts 实现结构", () => {
 
   it("OfficialAdapter 类实现了 CCAdapter 接口", () => {
     expect(officialSource).toMatch(/class\s+OfficialAdapter\s+implements\s+CCAdapter/);
+  });
+
+  it("buildSessionOptions 应传递 settingSources 和 appendSystemPrompt", () => {
+    expect(officialSource).toMatch(/settingSources:\s*settingSources\s*\?\?\s*DEFAULT_SETTING_SOURCES/);
+    expect(officialSource).toMatch(/MYCC_APPEND_SYSTEM_PROMPT|MYCC_UPSTREAM_MODEL_LABEL/);
+    expect(officialSource).toMatch(/options\.systemPrompt\s*=\s*\{/);
   });
 
   it("不再使用 query() 的 cwd 参数", () => {

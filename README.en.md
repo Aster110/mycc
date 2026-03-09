@@ -155,6 +155,31 @@ cd .claude/skills/mycc/scripts && npm install && cd -
 **Dependencies**:
 - [cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/): `brew install cloudflare/cloudflare/cloudflared`
 
+
+### Experimental: Use GPT or other models via a compatible gateway
+
+> The recommended setup is still the official Claude Code client. If you have an **Anthropic-compatible gateway**, mycc sessions can now inherit project/local settings and route to GPT or other upstream models.
+
+Create `.claude/settings.json` or `.claude/settings.local.json` in the project root:
+
+```json
+{
+  "env": {
+    "ANTHROPIC_BASE_URL": "https://your-gateway.example.com",
+    "ANTHROPIC_AUTH_TOKEN": "sk-...",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "gpt-5.4",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "gpt-5.4",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "gpt-5-mini",
+    "MYCC_APPEND_SYSTEM_PROMPT": "The actual upstream model is gpt-5.4 via a compatible gateway. If the user asks which model is running, answer truthfully."
+  }
+}
+```
+
+Notes:
+- mycc now loads `user`, `project`, and `local` setting sources for SDK sessions
+- `MYCC_APPEND_SYSTEM_PROMPT` is optional and helps fix model self-identification behind compatibility layers
+- If your gateway expects custom model IDs, map them with `ANTHROPIC_DEFAULT_*_MODEL`
+
 ## FAQ
 
 **Q: Hooks not working?**

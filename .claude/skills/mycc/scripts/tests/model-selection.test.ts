@@ -18,6 +18,19 @@ describe("模型选择 - ChatParams 类型", () => {
     expect(params.model).toBe("claude-opus-4-6");
   });
 
+
+  it("ChatParams 支持 settingSources 和 appendSystemPrompt", async () => {
+    const params: import("../src/types.js").ChatParams = {
+      message: "test",
+      cwd: "/tmp",
+      settingSources: ["user", "project", "local"],
+      appendSystemPrompt: "请如实说明底层模型",
+    };
+
+    expect(params.settingSources).toEqual(["user", "project", "local"]);
+    expect(params.appendSystemPrompt).toBe("请如实说明底层模型");
+  });
+
   it("ChatParams.model 是可选字段", async () => {
     const params: import("../src/types.js").ChatParams = {
       message: "test",
@@ -86,6 +99,25 @@ describe("模型选择 - HTTP body 解析", () => {
     expect(sessionId).toBe("session1");
     expect(model).toBe("claude-opus-4-6");
     expect(images).toBeUndefined();
+  });
+
+  it("附加字段可以透传到 adapter.chat 参数", () => {
+    const parsedBody = {
+      message: "hello",
+      settingSources: ["user", "project", "local"],
+      appendSystemPrompt: "当前底层模型为 gpt-5.4",
+    };
+    const cwd = "/tmp";
+
+    const chatParams = {
+      message: parsedBody.message,
+      cwd,
+      settingSources: parsedBody.settingSources,
+      appendSystemPrompt: parsedBody.appendSystemPrompt,
+    };
+
+    expect(chatParams.settingSources).toEqual(["user", "project", "local"]);
+    expect(chatParams.appendSystemPrompt).toContain("gpt-5.4");
   });
 
   it("JSON body 不含 model 时解构为 undefined", () => {
