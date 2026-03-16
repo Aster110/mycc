@@ -108,9 +108,9 @@ def generate_html(data):
             <div class="dev-name">{escape(dev["name"])}</div>
             <div class="progress-container">
                 <div class="progress-bar">
-                    <div class="progress-fill" style="width: {dev["progress"]}%"></div>
+                    <div class="progress-fill" style="width: {int(dev["progress"])}%"></div>
                 </div>
-                <span class="progress-text">{dev["progress"]}%</span>
+                <span class="progress-text">{int(dev["progress"])}%</span>
             </div>
             <div class="dev-next">{escape(dev["next"])}</div>
         </div>
