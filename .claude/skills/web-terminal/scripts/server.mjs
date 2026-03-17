@@ -196,6 +196,11 @@ html,body{height:100%;background:#1a1a2e;overflow:hidden;font-family:-apple-syst
 .xterm-viewport::-webkit-scrollbar{width:6px}
 .xterm-viewport::-webkit-scrollbar-thumb{background:rgba(233,69,96,0.3);border-radius:3px}
 .xterm-cursor-layer{opacity:0!important}
+.xterm .xterm-helper-textarea{
+  caret-color:transparent!important;
+  color:transparent!important;
+  background:transparent!important;
+}
 
 /* Overlay */
 #overlay{
@@ -375,6 +380,43 @@ var terms = {};
 var fitAddons = {};
 var panels = {};
 
+function getTermTextarea(term) {
+  if (!term) return null;
+  if (term.textarea) return term.textarea;
+  if (term.element) return term.element.querySelector('.xterm-helper-textarea');
+  return null;
+}
+
+function suppressNativeCaret(term) {
+  var textarea = getTermTextarea(term);
+  if (!textarea) return;
+  textarea.style.caretColor = 'transparent';
+  textarea.style.color = 'transparent';
+  textarea.style.background = 'transparent';
+  textarea.setAttribute('autocapitalize', 'off');
+  textarea.setAttribute('autocomplete', 'off');
+  textarea.setAttribute('autocorrect', 'off');
+  textarea.spellcheck = false;
+}
+
+function blurTerm(term) {
+  if (!term) return;
+  if (typeof term.blur === 'function') {
+    term.blur();
+    return;
+  }
+  var textarea = getTermTextarea(term);
+  if (textarea && typeof textarea.blur === 'function') textarea.blur();
+}
+
+function syncActiveTermFocus(shouldFocus) {
+  Object.keys(terms).forEach(function(id) {
+    if (id !== activeTab) blurTerm(terms[id]);
+  });
+  suppressNativeCaret(terms[activeTab]);
+  if (shouldFocus && terms[activeTab]) terms[activeTab].focus();
+}
+
 TABS.forEach(function(t) {
   var panel = document.createElement('div');
   panel.className = 'term-panel' + (t.id === activeTab ? ' active' : '');
@@ -412,6 +454,7 @@ TABS.forEach(function(t) {
   term.loadAddon(fit);
   if (window.WebLinksAddon) term.loadAddon(new window.WebLinksAddon.WebLinksAddon());
   term.open(panel);
+  suppressNativeCaret(term);
   fit.fit();
   terms[t.id] = term;
   fitAddons[t.id] = fit;
@@ -464,6 +507,7 @@ window.addEventListener('resize', function() {
 function switchTab(tabId) {
   if (activeTab === tabId) return;
   activeTab = tabId;
+  syncActiveTermFocus(false);
   document.querySelectorAll('.tab').forEach(function(el) {
     el.classList.toggle('active', el.dataset.tab === tabId);
   });
@@ -472,7 +516,7 @@ function switchTab(tabId) {
   });
   setTimeout(function() {
     fitAddons[tabId].fit();
-    if (!isMobile) terms[tabId].focus();
+    syncActiveTermFocus(!isMobile);
   }, 50);
   if (ws && ws.readyState === 1) {
     var t = terms[tabId];
@@ -729,16 +773,16 @@ if (isMobile) {
   termWrap.addEventListener('touchend', function(e) {
     if (touchDir === 'v' || touchDir === 'h') return; // was scrolling/swiping
     if (e.target.closest('#mobile-bar') || e.target.closest('#overlay')) return;
-    terms[activeTab].focus();
+    syncActiveTermFocus(true);
   });
 }
 
 // Desktop focus
 if (!isMobile) {
-  terms[activeTab].focus();
+  syncActiveTermFocus(true);
   document.addEventListener('click', function(e) {
     if (!e.target.closest('button') && !e.target.closest('.tab') && !e.target.closest('input') && !e.target.closest('textarea')) {
-      terms[activeTab].focus();
+      syncActiveTermFocus(true);
     }
   });
 }
