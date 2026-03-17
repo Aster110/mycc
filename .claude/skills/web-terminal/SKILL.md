@@ -5,7 +5,7 @@ description: 启动浏览器可访问的 CC 终端，支持外网和手机远程
 
 # Web Terminal
 
-多标签页 AI 终端，支持 Claude Code / Codex / Gemini 三个 AI CLI，通过浏览器远程访问，手机也能用。
+多标签页 AI 终端，预置 Claude Code / Codex 标签页，通过浏览器远程访问，手机也能用。
 
 ## 触发词
 
@@ -44,7 +44,7 @@ Token 不出现在 URL 里，在登录页输入即可。
 
 ## 功能特性
 
-- **多标签页**：Claude Code、Codex、Gemini 三个 AI CLI 标签页切换
+- **多标签页**：Claude Code、Codex 两个 AI CLI 标签页切换
 - **懒加载**：PTY 进程在首次切换到对应标签页时才启动，节省资源
 - **独立滚动缓冲**：每个标签页独立保存 50KB 输出历史
 - **连接状态指示**：实时显示 WebSocket 连接状态（绿点 = Connected）
@@ -57,7 +57,7 @@ Token 不出现在 URL 里，在登录页输入即可。
 | `WEB_TERMINAL_PORT` | 7681 | 监听端口 |
 | `WEB_TERMINAL_TOKEN` | 随机 | 建议固定为 `mycc` 方便记忆 |
 | `WEB_TERMINAL_CWD` | 当前目录 | 工作目录 |
-| `WEB_TERMINAL_TABS` | 内置3个 | JSON 自定义标签页配置 |
+| `WEB_TERMINAL_TABS` | 内置默认标签页 | JSON 自定义标签页配置 |
 
 ### 自定义标签页
 
