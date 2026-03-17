@@ -1,0 +1,14 @@
+{
+  "name": "cc-web-terminal",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "通过浏览器远程访问 Claude Code 终端",
+  "scripts": {
+    "start": "node server.mjs",
+    "dev": "node server.mjs"
+  },
+  "dependencies": {
+    "node-pty": "^1.1.0",
+    "ws": "^8.18.0"
+  }
+}
