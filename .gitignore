@@ -114,8 +114,18 @@ update-cmd-gitbash.ps1
 .claude/skills/collect/.fxb-token
 1-Inbox/_collect/
 
-# Web Terminal 上传文件
+# Web Terminal 运行时文件
+.claude/skills/web-terminal/runtime-tabs.json
 .claude/uploads/
+
+# ====================================
+# Agents/Codex 运行时文件
+# ====================================
+.agents/skills/mycc/current.json
+.agents/skills/mycc/*.log
+.agents/skills/mycc/scripts/*.log
+.agents/skills/mycc/scripts/dist/
+.agents/skills/mycc/scripts/node_modules/
 
 # 其他
 ieee.png
