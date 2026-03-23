@@ -180,6 +180,10 @@ export class HttpServer {
         await this.handleStatus(req, res);
       } else if (url.pathname === "/weixin/send-media" && req.method === "POST") {
         await this.handleWeixinSendMedia(req, res);
+      } else if (url.pathname === "/weixin/send" && req.method === "POST") {
+        await this.handleWeixinSend(req, res);
+      } else if (url.pathname === "/weixin/users" && req.method === "GET") {
+        this.handleWeixinUsers(req, res);
       } else {
         res.writeHead(404, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: "Not Found" }));
@@ -724,6 +728,72 @@ export class HttpServer {
       res.writeHead(500, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: String(err) }));
     }
+  }
+
+  /** 主动发微信消息（内部 API，仅 localhost） */
+  private async handleWeixinSend(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+    const remote = req.socket.remoteAddress ?? "";
+    if (!remote.includes("127.0.0.1") && !remote.includes("::1") && !remote.includes("::ffff:127.0.0.1")) {
+      res.writeHead(403, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "仅允许本机访问" }));
+      return;
+    }
+
+    if (!this.weixinChannel) {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "微信通道未启动" }));
+      return;
+    }
+
+    const body = await this.readBody(req);
+    const { to, text, filePath } = JSON.parse(body) as { to?: string; text?: string; filePath?: string };
+
+    if (!text && !filePath) {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "需要 text 或 filePath 参数" }));
+      return;
+    }
+
+    try {
+      const channel = this.weixinChannel as any;
+      // 如果未指定 to，使用最近消息的发送者
+      const targetUser = to || channel.getLastFromUserId?.();
+      if (!targetUser) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "缺少 to 参数且没有最近的消息发送者" }));
+        return;
+      }
+
+      await channel.sendProactive(targetUser, text ?? "", filePath);
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: true, to: targetUser }));
+    } catch (err) {
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: String(err) }));
+    }
+  }
+
+  /** 获取微信已知用户列表（内部 API，仅 localhost） */
+  private handleWeixinUsers(req: http.IncomingMessage, res: http.ServerResponse): void {
+    const remote = req.socket.remoteAddress ?? "";
+    if (!remote.includes("127.0.0.1") && !remote.includes("::1") && !remote.includes("::ffff:127.0.0.1")) {
+      res.writeHead(403, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "仅允许本机访问" }));
+      return;
+    }
+
+    if (!this.weixinChannel) {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "微信通道未启动" }));
+      return;
+    }
+
+    const channel = this.weixinChannel as any;
+    const users = channel.getKnownUsers?.() ?? [];
+    const lastFrom = channel.getLastFromUserId?.() ?? null;
+
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ users, lastFrom }));
   }
 
   /**

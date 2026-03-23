@@ -3,9 +3,12 @@
  *
  * 通过微信 iLink Bot API 实现双向通信：
  * - 接收：long-poll getUpdates 接收微信消息
- * - 发送：sendMessage 发送回复
+ * - 发送：sendMessage 发送回复（支持主动发消息）
+ * - 状态：sendTyping 发送输入状态指示
+ * - 配置：getConfig 获取 typing ticket 等
  *
  * 基于微信 iLink Bot HTTP API，直接集成到 mycc 体系。
+ * API 协议参考：@tencent-weixin/openclaw-weixin
  */
 
 import crypto from "node:crypto";
@@ -20,20 +23,28 @@ import type { SSEEvent } from "../adapters/interface.js";
 const DEFAULT_BASE_URL = "https://ilinkai.weixin.qq.com";
 const CDN_BASE_URL = "https://novac2c.cdn.weixin.qq.com/c2c";
 const DEFAULT_BOT_TYPE = "3";
+const CHANNEL_VERSION = "0.2.0";
 const LONG_POLL_TIMEOUT_MS = 35_000;
 const API_TIMEOUT_MS = 15_000;
+const CONFIG_TIMEOUT_MS = 10_000;
 const MAX_CONSECUTIVE_FAILURES = 3;
 const BACKOFF_DELAY_MS = 30_000;
 const RETRY_DELAY_MS = 2_000;
 const SESSION_EXPIRED_ERRCODE = -14;
 const SESSION_PAUSE_MS = 10 * 60_000;
+const CONFIG_CACHE_TTL_MS = 24 * 60 * 60_000;
 
 // ── 类型 ──────────────────────────────────────────────────────────────────
 
-/** 消息项类型 */
 const MessageItemType = { NONE: 0, TEXT: 1, IMAGE: 2, VOICE: 3, FILE: 4, VIDEO: 5 } as const;
 const MessageType = { NONE: 0, USER: 1, BOT: 2 } as const;
 const MessageState = { NEW: 0, GENERATING: 1, FINISH: 2 } as const;
+const UploadMediaType = { IMAGE: 1, VIDEO: 2, FILE: 3, VOICE: 4 } as const;
+const TypingStatus = { TYPING: 1, CANCEL: 2 } as const;
+
+interface BaseInfo {
+  channel_version?: string;
+}
 
 interface CDNMedia {
   encrypt_query_param?: string;
@@ -41,14 +52,58 @@ interface CDNMedia {
   encrypt_type?: number;
 }
 
+interface ImageItem {
+  media?: CDNMedia;
+  thumb_media?: CDNMedia;
+  aeskey?: string;
+  url?: string;
+  mid_size?: number;
+  thumb_size?: number;
+  thumb_height?: number;
+  thumb_width?: number;
+  hd_size?: number;
+}
+
+interface VoiceItem {
+  media?: CDNMedia;
+  encode_type?: number;
+  bits_per_sample?: number;
+  sample_rate?: number;
+  playtime?: number;
+  text?: string;
+}
+
+interface FileItem {
+  media?: CDNMedia;
+  file_name?: string;
+  md5?: string;
+  len?: string;
+}
+
+interface VideoItem {
+  media?: CDNMedia;
+  video_size?: number;
+  play_length?: number;
+  video_md5?: string;
+  thumb_media?: CDNMedia;
+  thumb_size?: number;
+  thumb_height?: number;
+  thumb_width?: number;
+}
+
+interface RefMessage {
+  message_item?: MessageItem;
+  title?: string;
+}
+
 interface MessageItem {
   type?: number;
   text_item?: { text?: string };
-  image_item?: { media?: CDNMedia; url?: string; mid_size?: number };
-  voice_item?: { media?: CDNMedia; text?: string; playtime?: number };
-  file_item?: { media?: CDNMedia; file_name?: string; len?: string; md5?: string };
-  video_item?: { media?: CDNMedia; video_size?: number };
-  ref_msg?: { message_item?: MessageItem; title?: string };
+  image_item?: ImageItem;
+  voice_item?: VoiceItem;
+  file_item?: FileItem;
+  video_item?: VideoItem;
+  ref_msg?: RefMessage;
 }
 
 interface GetUploadUrlResp {
@@ -62,8 +117,10 @@ interface WeixinMessage {
   message_id?: number;
   from_user_id?: string;
   to_user_id?: string;
+  client_id?: string;
   create_time_ms?: number;
   session_id?: string;
+  group_id?: string;
   message_type?: number;
   message_state?: number;
   item_list?: MessageItem[];
@@ -79,7 +136,12 @@ interface GetUpdatesResp {
   longpolling_timeout_ms?: number;
 }
 
-/** 账号数据（持久化） */
+interface GetConfigResp {
+  ret?: number;
+  errmsg?: string;
+  typing_ticket?: string;
+}
+
 interface WeixinAccountData {
   token?: string;
   baseUrl?: string;
@@ -88,12 +150,15 @@ interface WeixinAccountData {
   savedAt?: string;
 }
 
-/** 微信通道配置 */
 export interface WeixinChannelConfig {
-  /** 数据存储目录 */
   stateDir: string;
-  /** 自定义 API 基地址 */
   baseUrl?: string;
+}
+
+// ── base_info ─────────────────────────────────────────────────────────────
+
+function buildBaseInfo(): BaseInfo {
+  return { channel_version: CHANNEL_VERSION };
 }
 
 // ── API 层 ────────────────────────────────────────────────────────────────
@@ -170,7 +235,10 @@ async function apiGetUpdates(params: {
     const rawText = await apiFetch({
       baseUrl: params.baseUrl,
       endpoint: "ilink/bot/getupdates",
-      body: JSON.stringify({ get_updates_buf: params.getUpdatesBuf }),
+      body: JSON.stringify({
+        get_updates_buf: params.getUpdatesBuf,
+        base_info: buildBaseInfo(),
+      }),
       token: params.token,
       timeoutMs: timeout,
       label: "getUpdates",
@@ -209,12 +277,56 @@ async function apiSendMessage(params: {
         item_list: items.length ? items : undefined,
         context_token: params.contextToken,
       },
+      base_info: buildBaseInfo(),
     }),
     token: params.token,
     timeoutMs: API_TIMEOUT_MS,
     label: "sendMessage",
   });
   return clientId;
+}
+
+async function apiGetConfig(params: {
+  baseUrl: string;
+  token?: string;
+  ilinkUserId: string;
+  contextToken?: string;
+}): Promise<GetConfigResp> {
+  const rawText = await apiFetch({
+    baseUrl: params.baseUrl,
+    endpoint: "ilink/bot/getconfig",
+    body: JSON.stringify({
+      ilink_user_id: params.ilinkUserId,
+      context_token: params.contextToken,
+      base_info: buildBaseInfo(),
+    }),
+    token: params.token,
+    timeoutMs: CONFIG_TIMEOUT_MS,
+    label: "getConfig",
+  });
+  return JSON.parse(rawText);
+}
+
+async function apiSendTyping(params: {
+  baseUrl: string;
+  token?: string;
+  ilinkUserId: string;
+  typingTicket: string;
+  status: number;
+}): Promise<void> {
+  await apiFetch({
+    baseUrl: params.baseUrl,
+    endpoint: "ilink/bot/sendtyping",
+    body: JSON.stringify({
+      ilink_user_id: params.ilinkUserId,
+      typing_ticket: params.typingTicket,
+      status: params.status,
+      base_info: buildBaseInfo(),
+    }),
+    token: params.token,
+    timeoutMs: CONFIG_TIMEOUT_MS,
+    label: "sendTyping",
+  });
 }
 
 // ── CDN 媒体操作 ─────────────────────────────────────────────────────────
@@ -241,12 +353,11 @@ function detectExtByMagic(buf: Buffer): string {
   return "";
 }
 
-/** 根据扩展名检测媒体类型：IMAGE=1, VIDEO=2, FILE=3 */
 function detectMediaType(filePath: string): number {
   const ext = path.extname(filePath).toLowerCase();
-  if ([".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp"].includes(ext)) return 1;
-  if ([".mp4", ".mov", ".avi", ".mkv"].includes(ext)) return 2;
-  return 3;
+  if ([".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp"].includes(ext)) return UploadMediaType.IMAGE;
+  if ([".mp4", ".mov", ".avi", ".mkv"].includes(ext)) return UploadMediaType.VIDEO;
+  return UploadMediaType.FILE;
 }
 
 async function apiGetUploadUrl(params: {
@@ -257,7 +368,7 @@ async function apiGetUploadUrl(params: {
   const rawText = await apiFetch({
     baseUrl: params.baseUrl,
     endpoint: "ilink/bot/getuploadurl",
-    body: JSON.stringify(params.uploadParams),
+    body: JSON.stringify({ ...params.uploadParams, base_info: buildBaseInfo() }),
     token: params.token,
     timeoutMs: API_TIMEOUT_MS,
     label: "getUploadUrl",
@@ -265,34 +376,27 @@ async function apiGetUploadUrl(params: {
   return JSON.parse(rawText);
 }
 
-/** 上传媒体文件到微信 CDN 并发送消息 */
 async function apiUploadMedia(params: {
   baseUrl: string;
   token: string;
   toUser: string;
-  contextToken: string;
+  contextToken?: string;
   filePath: string;
 }): Promise<void> {
   const { baseUrl, token, toUser, contextToken, filePath } = params;
 
-  // 1. 读取文件
   const fileData = fs.readFileSync(filePath);
   const rawsize = fileData.length;
   const rawfilemd5 = crypto.createHash("md5").update(fileData).digest("hex");
 
-  // 2. 生成 AES key 并检测媒体类型
   const aesKey = crypto.randomBytes(16);
   const mediaType = detectMediaType(filePath);
-
-  // 3. 加密文件
   const ciphertext = encryptAesEcb(fileData, aesKey);
 
-  // 4. 构造 filekey
   const extname = path.extname(filePath);
   const rand = crypto.randomBytes(3).toString("hex");
   const filekey = `mycc-wx-${Date.now()}-${rand}${extname}`;
 
-  // 5. 获取上传地址
   console.log(`[uploadMedia] 文件: ${path.basename(filePath)}, 大小: ${rawsize}, 加密后: ${ciphertext.length}, 类型: ${mediaType}`);
   const uploadResp = await apiGetUploadUrl({
     baseUrl,
@@ -306,15 +410,12 @@ async function apiUploadMedia(params: {
       filesize: ciphertext.length,
       no_need_thumb: true,
       aeskey: aesKey.toString("hex"),
-      base_info: { channel_version: "0.1.0" },
     },
   });
-  console.log(`[uploadMedia] getUploadUrl 响应:`, JSON.stringify(uploadResp));
 
   const uploadParam = uploadResp.upload_param ?? "";
   const serverFilekey = uploadResp.filekey ?? filekey;
 
-  // 6. 上传到 CDN
   const cdnUrl =
     `${CDN_BASE_URL}/upload` +
     `?encrypted_query_param=${encodeURIComponent(uploadParam)}` +
@@ -329,12 +430,8 @@ async function apiUploadMedia(params: {
       method: "POST",
       headers: {
         "Content-Type": "application/octet-stream",
-        AuthorizationType: "ilink_bot_token",
-        "X-WECHAT-UIN": randomWechatUin(),
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        "Content-Length": String(ciphertext.length),
       },
-      body: ciphertext,
+      body: new Uint8Array(ciphertext),
       signal: controller.signal,
     });
     if (!cdnResp.ok) {
@@ -347,7 +444,6 @@ async function apiUploadMedia(params: {
     clearTimeout(timer);
   }
 
-  // 7. 构造媒体信息
   const aesKeyBase64 = Buffer.from(aesKey.toString("hex")).toString("base64");
   const mediaInfo: CDNMedia = {
     encrypt_query_param: downloadParam,
@@ -355,11 +451,10 @@ async function apiUploadMedia(params: {
     encrypt_type: 1,
   };
 
-  // 8. 根据媒体类型构造 MessageItem
   let mediaItem: Record<string, unknown>;
-  if (mediaType === 1) {
+  if (mediaType === UploadMediaType.IMAGE) {
     mediaItem = { type: MessageItemType.IMAGE, image_item: { media: mediaInfo, mid_size: ciphertext.length } };
-  } else if (mediaType === 2) {
+  } else if (mediaType === UploadMediaType.VIDEO) {
     mediaItem = { type: MessageItemType.VIDEO, video_item: { media: mediaInfo, video_size: ciphertext.length } };
   } else {
     mediaItem = {
@@ -373,7 +468,6 @@ async function apiUploadMedia(params: {
     };
   }
 
-  // 9. 发送消息
   const clientId = `mycc-wx-${crypto.randomUUID()}`;
   await apiFetch({
     baseUrl,
@@ -388,6 +482,7 @@ async function apiUploadMedia(params: {
         item_list: [mediaItem],
         context_token: contextToken,
       },
+      base_info: buildBaseInfo(),
     }),
     token,
     timeoutMs: API_TIMEOUT_MS,
@@ -395,7 +490,6 @@ async function apiUploadMedia(params: {
   });
 }
 
-/** 从微信 CDN 下载并解密媒体文件 */
 async function apiDownloadMedia(params: {
   encryptQueryParam: string;
   aesKeyBase64: string;
@@ -404,12 +498,10 @@ async function apiDownloadMedia(params: {
 }): Promise<string> {
   const { encryptQueryParam, aesKeyBase64, outDir, fileName } = params;
 
-  // 1. 构造下载 URL
   const downloadUrl =
     `${CDN_BASE_URL}/download` +
     `?encrypted_query_param=${encodeURIComponent(encryptQueryParam)}`;
 
-  // 2. 下载密文
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 60_000);
 
@@ -425,14 +517,10 @@ async function apiDownloadMedia(params: {
     clearTimeout(timer);
   }
 
-  // 3. 解码 AES key（base64 → hex string → 16 字节 key）
   const hexStr = Buffer.from(aesKeyBase64, "base64").toString("utf-8");
   const aesKey = Buffer.from(hexStr, "hex");
-
-  // 4. 解密
   const plaintext = decryptAesEcb(ciphertext, aesKey);
 
-  // 5. 通过文件头检测类型并保存
   const ext = detectExtByMagic(plaintext);
   const targetDir = outDir ?? path.join(os.tmpdir(), "mycc-weixin", "media");
   fs.mkdirSync(targetDir, { recursive: true });
@@ -493,7 +581,6 @@ async function pollQRStatus(apiBaseUrl: string, qrcode: string): Promise<{
 
 // ── 消息解析 ──────────────────────────────────────────────────────────────
 
-/** 去除 markdown 格式（微信纯文本） */
 function stripMarkdown(text: string): string {
   let result = text;
   result = result.replace(/```[^\n]*\n?([\s\S]*?)```/g, (_, code: string) => code.trim());
@@ -503,7 +590,6 @@ function stripMarkdown(text: string): string {
   result = result.replace(/^\|(.+)\|$/gm, (_, inner: string) =>
     inner.split("|").map((cell) => cell.trim()).join("  "),
   );
-  // 基础 markdown 去除
   result = result.replace(/\*\*(.+?)\*\*/g, "$1");
   result = result.replace(/\*(.+?)\*/g, "$1");
   result = result.replace(/__(.+?)__/g, "$1");
@@ -516,6 +602,13 @@ function stripMarkdown(text: string): string {
   return result;
 }
 
+// ── typing ticket 缓存 ──────────────────────────────────────────────────
+
+interface TypingCacheEntry {
+  ticket: string;
+  fetchedAt: number;
+}
+
 // ── 微信通道 ──────────────────────────────────────────────────────────────
 
 export class WeixinChannel implements MessageChannel {
@@ -526,6 +619,7 @@ export class WeixinChannel implements MessageChannel {
   private abortController: AbortController | null = null;
   private messageCallback: ((message: string) => void) | null = null;
   private contextTokenStore = new Map<string, string>();
+  private typingTicketCache = new Map<string, TypingCacheEntry>();
   private getUpdatesBuf = "";
   private sessionPausedUntil = 0;
   private lastFromUserId: string | null = null;
@@ -536,18 +630,12 @@ export class WeixinChannel implements MessageChannel {
 
   // ── MessageChannel 接口 ──
 
-  /**
-   * 过滤器：微信通道不处理 SSE 事件广播
-   * 微信回复通过 messageCallback → adapter.chat() → sendReply 的方式发送，
-   * 不走 ChannelManager.broadcast()
-   */
   filter(_event: SSEEvent): boolean {
     return false;
   }
 
   async send(_event: SSEEvent): Promise<void> {
     // 微信通道不通过 broadcast 发送消息
-    // 回复通过 sendReply() 方法直接发送
   }
 
   // ── 消息回调 ──
@@ -559,20 +647,18 @@ export class WeixinChannel implements MessageChannel {
   // ── 生命周期 ──
 
   async start(): Promise<void> {
-    // 加载已保存的账号
     this.account = this.loadAccount();
     if (!this.account?.token) {
       console.log("[WeixinChannel] 未登录，请使用 /mycc-weixin 扫码登录");
       return;
     }
 
-    // 加载 sync buf
     this.getUpdatesBuf = this.loadSyncBuf();
+    this.restoreContextTokens();
 
     console.log(`[WeixinChannel] 已加载账号: ${this.account.accountId}`);
     console.log("[WeixinChannel] 启动消息监听...");
 
-    // 启动 long-poll 循环
     this.abortController = new AbortController();
     this.runMonitorLoop().catch((err) => {
       if (!this.abortController?.signal.aborted) {
@@ -597,7 +683,6 @@ export class WeixinChannel implements MessageChannel {
 
     const { qrcode, qrcodeUrl } = await fetchQRCode(baseUrl);
 
-    // 打印二维码到终端
     console.log("\n使用微信扫描以下二维码：\n");
     try {
       const qrterm = await import("qrcode-terminal");
@@ -611,9 +696,8 @@ export class WeixinChannel implements MessageChannel {
       console.log(`二维码链接: ${qrcodeUrl}`);
     }
 
-    // 轮询登录状态
     console.log("\n等待扫码...\n");
-    const deadline = Date.now() + 480_000; // 8 分钟超时
+    const deadline = Date.now() + 480_000;
     let scannedPrinted = false;
 
     while (Date.now() < deadline) {
@@ -636,7 +720,6 @@ export class WeixinChannel implements MessageChannel {
             console.error("登录失败：服务器未返回必要信息");
             return false;
           }
-          // 规范化 accountId
           const accountId = status.ilink_bot_id
             .replace(/@/g, "-")
             .replace(/\./g, "-");
@@ -661,7 +744,6 @@ export class WeixinChannel implements MessageChannel {
     return false;
   }
 
-  /** 检查是否已登录 */
   isLoggedIn(): boolean {
     if (!this.account) {
       this.account = this.loadAccount();
@@ -669,13 +751,70 @@ export class WeixinChannel implements MessageChannel {
     return Boolean(this.account?.token);
   }
 
+  // ── typing 指示器 ──
+
+  private async getTypingTicket(userId: string): Promise<string> {
+    const cached = this.typingTicketCache.get(userId);
+    if (cached && Date.now() - cached.fetchedAt < CONFIG_CACHE_TTL_MS) {
+      return cached.ticket;
+    }
+
+    if (!this.account?.token) return "";
+
+    try {
+      const resp = await apiGetConfig({
+        baseUrl: this.account.baseUrl || DEFAULT_BASE_URL,
+        token: this.account.token,
+        ilinkUserId: userId,
+        contextToken: this.contextTokenStore.get(userId),
+      });
+      if (resp.ret === 0 && resp.typing_ticket) {
+        this.typingTicketCache.set(userId, {
+          ticket: resp.typing_ticket,
+          fetchedAt: Date.now(),
+        });
+        return resp.typing_ticket;
+      }
+    } catch (err) {
+      console.warn(`[WeixinChannel] getConfig 失败 (ignored): ${String(err)}`);
+    }
+    return cached?.ticket ?? "";
+  }
+
+  private async startTyping(userId: string): Promise<void> {
+    const ticket = await this.getTypingTicket(userId);
+    if (!ticket || !this.account?.token) return;
+    try {
+      await apiSendTyping({
+        baseUrl: this.account.baseUrl || DEFAULT_BASE_URL,
+        token: this.account.token,
+        ilinkUserId: userId,
+        typingTicket: ticket,
+        status: TypingStatus.TYPING,
+      });
+    } catch {
+      // 非关键操作，忽略错误
+    }
+  }
+
+  private async stopTyping(userId: string): Promise<void> {
+    const ticket = this.typingTicketCache.get(userId)?.ticket;
+    if (!ticket || !this.account?.token) return;
+    try {
+      await apiSendTyping({
+        baseUrl: this.account.baseUrl || DEFAULT_BASE_URL,
+        token: this.account.token,
+        ilinkUserId: userId,
+        typingTicket: ticket,
+        status: TypingStatus.CANCEL,
+      });
+    } catch {
+      // 非关键操作，忽略错误
+    }
+  }
+
   // ── 发送回复 ──
 
-  /**
-   * 发送回复给最近消息的发送者
-   * @param text - 回复文本
-   * @param media - 可选：本地文件绝对路径，发送图片/视频/文件
-   */
   async sendLastReply(text: string, media?: string): Promise<void> {
     if (!this.lastFromUserId) {
       console.warn("[WeixinChannel] 无法回复：没有最近的发送者");
@@ -684,26 +823,18 @@ export class WeixinChannel implements MessageChannel {
     await this.sendReply(this.lastFromUserId, text, media);
   }
 
-  /**
-   * 发送回复到微信用户
-   * @param to - 微信用户 ID
-   * @param text - 回复文本（会自动去除 markdown）
-   * @param media - 可选：本地文件绝对路径，发送图片/视频/文件
-   */
   async sendReply(to: string, text: string, media?: string): Promise<void> {
     if (!this.account?.token) {
       throw new Error("微信未登录");
     }
     const contextToken = this.contextTokenStore.get(to);
     if (!contextToken) {
-      console.warn(`[WeixinChannel] 无法回复 ${to}：缺少 contextToken`);
-      return;
+      console.warn(`[WeixinChannel] 发送给 ${to}：无 contextToken，尝试无上下文发送`);
     }
 
     const baseUrl = this.account.baseUrl || DEFAULT_BASE_URL;
     const token = this.account.token;
 
-    // 发送文本消息
     if (text) {
       const plainText = stripMarkdown(text);
       await apiSendMessage({
@@ -715,7 +846,6 @@ export class WeixinChannel implements MessageChannel {
       });
     }
 
-    // 发送媒体文件
     if (media) {
       if (!fs.existsSync(media)) {
         console.warn(`[WeixinChannel] 媒体文件不存在: ${media}`);
@@ -739,6 +869,46 @@ export class WeixinChannel implements MessageChannel {
     }
   }
 
+  /**
+   * 主动发消息给指定用户（不需要先收到消息）
+   * 如果有缓存的 contextToken 会使用，没有也能发送
+   */
+  async sendProactive(to: string, text: string, media?: string): Promise<void> {
+    if (!this.account?.token) {
+      throw new Error("微信未登录");
+    }
+    const contextToken = this.contextTokenStore.get(to);
+    if (!contextToken) {
+      console.log(`[WeixinChannel] 主动发消息给 ${to}（无 contextToken）`);
+    }
+
+    const baseUrl = this.account.baseUrl || DEFAULT_BASE_URL;
+    const token = this.account.token;
+
+    if (text) {
+      const plainText = stripMarkdown(text);
+      await apiSendMessage({ baseUrl, token, to, text: plainText, contextToken });
+    }
+
+    if (media) {
+      if (!fs.existsSync(media)) {
+        throw new Error(`媒体文件不存在: ${media}`);
+      }
+      await apiUploadMedia({ baseUrl, token, toUser: to, contextToken, filePath: media });
+      console.log(`[WeixinChannel] 媒体文件已发送: ${path.basename(media)}`);
+    }
+  }
+
+  /** 获取所有已知用户（有 contextToken 缓存的） */
+  getKnownUsers(): string[] {
+    return [...this.contextTokenStore.keys()];
+  }
+
+  /** 获取最近消息发送者的 userId */
+  getLastFromUserId(): string | null {
+    return this.lastFromUserId;
+  }
+
   // ── 内部：long-poll 监听循环 ──
 
   private async runMonitorLoop(): Promise<void> {
@@ -749,7 +919,6 @@ export class WeixinChannel implements MessageChannel {
     console.log("[WeixinChannel] 消息监听已启动");
 
     while (!signal?.aborted) {
-      // session 暂停检查
       if (Date.now() < this.sessionPausedUntil) {
         const waitMs = this.sessionPausedUntil - Date.now();
         console.log(`[WeixinChannel] session 暂停中，等待 ${Math.ceil(waitMs / 60000)} 分钟`);
@@ -765,12 +934,10 @@ export class WeixinChannel implements MessageChannel {
           timeoutMs: nextTimeoutMs,
         });
 
-        // 更新超时
         if (resp.longpolling_timeout_ms != null && resp.longpolling_timeout_ms > 0) {
           nextTimeoutMs = resp.longpolling_timeout_ms;
         }
 
-        // 错误处理
         const isApiError =
           (resp.ret !== undefined && resp.ret !== 0) ||
           (resp.errcode !== undefined && resp.errcode !== 0);
@@ -797,13 +964,11 @@ export class WeixinChannel implements MessageChannel {
 
         consecutiveFailures = 0;
 
-        // 保存 sync buf
         if (resp.get_updates_buf) {
           this.getUpdatesBuf = resp.get_updates_buf;
           this.saveSyncBuf(resp.get_updates_buf);
         }
 
-        // 处理消息
         const msgs = resp.msgs ?? [];
         for (const msg of msgs) {
           await this.processInboundMessage(msg);
@@ -826,7 +991,6 @@ export class WeixinChannel implements MessageChannel {
     const fromUserId = msg.from_user_id ?? "";
     const parts: string[] = [];
 
-    // 提取各类型消息内容（支持媒体下载）
     for (const item of msg.item_list ?? []) {
       const t = item.type ?? 0;
 
@@ -857,7 +1021,12 @@ export class WeixinChannel implements MessageChannel {
         }
         parts.push(desc);
       } else if (t === MessageItemType.VOICE) {
-        parts.push(`[语音] ${item.voice_item?.text ?? ""}`);
+        const voiceText = item.voice_item?.text;
+        if (voiceText) {
+          parts.push(voiceText);
+        } else {
+          parts.push(`[语音]`);
+        }
       } else if (t === MessageItemType.FILE) {
         let desc = `[文件: ${item.file_item?.file_name ?? "unknown"}]`;
         if (item.file_item?.media?.encrypt_query_param && item.file_item?.media?.aes_key) {
@@ -893,19 +1062,59 @@ export class WeixinChannel implements MessageChannel {
     const fullText = parts.join("\n") || "";
     if (!fullText) return;
 
-    // 缓存 contextToken
+    // 缓存 contextToken（持久化到磁盘）
     if (msg.context_token) {
       this.contextTokenStore.set(fromUserId, msg.context_token);
+      this.persistContextTokens();
     }
 
     console.log(`[WeixinChannel] 收到消息 from=${fromUserId}: ${fullText.substring(0, 50)}${fullText.length > 50 ? "..." : ""}`);
 
-    // 记录最近发送者
     this.lastFromUserId = fromUserId;
 
-    // 触发消息回调
+    // 发送 typing 指示器
+    this.startTyping(fromUserId).catch(() => {});
+
     if (this.messageCallback) {
       this.messageCallback(fullText);
+    }
+  }
+
+  // ── context token 持久化 ──
+
+  private getContextTokenFilePath(): string {
+    return path.join(this.getStateDir(), "context-tokens.json");
+  }
+
+  private persistContextTokens(): void {
+    const filePath = this.getContextTokenFilePath();
+    const tokens: Record<string, string> = {};
+    for (const [k, v] of this.contextTokenStore) {
+      tokens[k] = v;
+    }
+    try {
+      fs.writeFileSync(filePath, JSON.stringify(tokens), "utf-8");
+    } catch (err) {
+      console.warn(`[WeixinChannel] 持久化 contextToken 失败: ${String(err)}`);
+    }
+  }
+
+  private restoreContextTokens(): void {
+    const filePath = this.getContextTokenFilePath();
+    try {
+      if (!fs.existsSync(filePath)) return;
+      const raw = fs.readFileSync(filePath, "utf-8");
+      const tokens = JSON.parse(raw) as Record<string, string>;
+      let count = 0;
+      for (const [userId, token] of Object.entries(tokens)) {
+        if (typeof token === "string" && token) {
+          this.contextTokenStore.set(userId, token);
+          count++;
+        }
+      }
+      console.log(`[WeixinChannel] 恢复了 ${count} 个 contextToken`);
+    } catch (err) {
+      console.warn(`[WeixinChannel] 恢复 contextToken 失败: ${String(err)}`);
     }
   }
 
