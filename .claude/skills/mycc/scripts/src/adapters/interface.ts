@@ -7,7 +7,7 @@
  */
 
 import type { ChatParams, ConversationSummary, ConversationHistory } from "../types.js";
-import type { SDKSession } from "@anthropic-ai/claude-agent-sdk";
+import type { SDKSession, SettingSource } from "@anthropic-ai/claude-agent-sdk";
 
 /** SSE 事件 */
 export type SSEEvent = Record<string, unknown>;
@@ -17,6 +17,8 @@ export interface SessionParams {
   sessionId?: string;
   model?: string;
   cwd?: string;
+  settingSources?: SettingSource[];
+  appendSystemPrompt?: string;
 }
 
 /** Adapter 接口 */

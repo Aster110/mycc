@@ -28,6 +28,8 @@ export interface PairState {
 
 // ============ 对话与历史 ============
 
+import type { SettingSource } from "@anthropic-ai/claude-agent-sdk";
+
 /** 图片数据（简化版，完整定义在 image-utils.ts） */
 export interface ImageData {
   data: string; // base64 编码（不含 data:image/xxx;base64, 前缀）
@@ -41,6 +43,8 @@ export interface ChatParams {
   cwd: string;
   images?: ImageData[];
   model?: string;
+  settingSources?: SettingSource[];
+  appendSystemPrompt?: string;
 }
 
 

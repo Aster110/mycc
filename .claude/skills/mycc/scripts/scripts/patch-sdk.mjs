@@ -26,19 +26,24 @@ const SDK_PATH = join(SDK_DIR, "sdk.mjs");
 // ============ Patch 1: sdk.mjs — settingSources ============
 
 const SETTINGS_ORIGINAL = "settingSources:[]";
-const SETTINGS_PATCHED = 'settingSources:X.settingSources??["user","project"]';
+const SETTINGS_PREVIOUS = 'settingSources:X.settingSources??["user","project"]';
+const SETTINGS_PATCHED = 'settingSources:X.settingSources??["user","project","local"]';
 
 try {
   const source = readFileSync(SDK_PATH, "utf-8");
 
   if (source.includes(SETTINGS_PATCHED)) {
     console.log("[patch-sdk] sdk.mjs: settingSources already patched.");
-  } else if (!source.includes(SETTINGS_ORIGINAL)) {
-    console.warn("[patch-sdk] sdk.mjs: settingSources pattern not found (SDK may have fixed it).");
-  } else {
+  } else if (source.includes(SETTINGS_PREVIOUS)) {
+    const patched = source.replace(SETTINGS_PREVIOUS, SETTINGS_PATCHED);
+    writeFileSync(SDK_PATH, patched, "utf-8");
+    console.log("[patch-sdk] sdk.mjs: upgraded settingSources default to include local.");
+  } else if (source.includes(SETTINGS_ORIGINAL)) {
     const patched = source.replace(SETTINGS_ORIGINAL, SETTINGS_PATCHED);
     writeFileSync(SDK_PATH, patched, "utf-8");
-    console.log("[patch-sdk] sdk.mjs: patched settingSources:[] → settingSources:X.settingSources??[\"user\",\"project\"]");
+    console.log("[patch-sdk] sdk.mjs: patched settingSources:[] → settingSources:X.settingSources??[\"user\",\"project\",\"local\"]");
+  } else {
+    console.warn("[patch-sdk] sdk.mjs: settingSources pattern not found (SDK may have fixed it).");
   }
 } catch (err) {
   console.error("[patch-sdk] sdk.mjs patch failed:", err.message);

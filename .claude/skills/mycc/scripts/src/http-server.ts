@@ -20,6 +20,7 @@ import { loadConfig } from "./config.js";
 import { SessionStats } from "./session-stats.js";
 import { FeishuCommands } from "./channels/feishu-commands.js";
 import { resolveAgentDir, listAgents } from "./agent-resolver.js";
+import type { SettingSource } from "@anthropic-ai/claude-agent-sdk";
 
 const PORT = process.env.PORT || 18080;
 
@@ -296,7 +297,7 @@ export class HttpServer {
 
     // agentId 路由：解析为 Agent 目录
     let effectiveCwd = this.cwd;
-    let settingSources: string[] | undefined;
+    let settingSources: SettingSource[] | undefined;
     if (agentId) {
       if (!this.agentsDir) {
         res.writeHead(404, { "Content-Type": "application/json" });
@@ -354,7 +355,15 @@ export class HttpServer {
 
     try {
       // 使用 adapter 的 chat 方法（返回 AsyncIterable）
-      for await (const data of adapter.chat({ message: chatMessage, sessionId, cwd: effectiveCwd, images, model: model || undefined, settingSources })) {
+      for await (const data of adapter.chat({
+        message: chatMessage,
+        sessionId,
+        cwd: effectiveCwd,
+        images,
+        model: model || undefined,
+        settingSources: settingSources || (["user", "project", "local"] satisfies SettingSource[]),
+        appendSystemPrompt: process.env.MYCC_APPEND_SYSTEM_PROMPT || undefined,
+      })) {
         if (data && typeof data === "object" && "type" in data) {
           // 提取 session_id
           if (data.type === "system" && "session_id" in data) {

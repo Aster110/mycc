@@ -166,6 +166,31 @@ cd .claude/skills/mycc/scripts && npm install && cd -
 **依赖**：
 - [cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/)：`brew install cloudflare/cloudflare/cloudflared`
 
+
+### 实验性：通过兼容网关接入 GPT / 其他模型
+
+> 仍然推荐使用官方原版 Claude Code；如果你有 **Anthropic 兼容网关**，现在也可以通过项目级设置让 mycc 会话使用 GPT 等其他模型。
+
+在项目根目录新建 `.claude/settings.json` 或 `.claude/settings.local.json`：
+
+```json
+{
+  "env": {
+    "ANTHROPIC_BASE_URL": "https://your-gateway.example.com",
+    "ANTHROPIC_AUTH_TOKEN": "sk-...",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "gpt-5.4",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "gpt-5.4",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "gpt-5-mini",
+    "MYCC_APPEND_SYSTEM_PROMPT": "当前实际底层模型为 gpt-5.4（通过兼容网关接入）。当用户询问你是什么模型时，请如实说明。"
+  }
+}
+```
+
+说明：
+- mycc 后端现在会为 SDK 会话加载 `user` / `project` / `local` 三类设置源
+- `MYCC_APPEND_SYSTEM_PROMPT` 是可选项，用于修正通过兼容层接入时的“自报模型”
+- 如果网关只识别自定义模型名，也可以配合 `ANTHROPIC_DEFAULT_*_MODEL` 做模型映射
+
 ## 常见问题
 
 **Q: Hooks 没生效？**
